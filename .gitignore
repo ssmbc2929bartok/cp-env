@@ -1,0 +1,7 @@
+/contest/
+/problems/
+*.exe
+*.out
+a.out
+.env
+.log/
