@@ -28,3 +28,6 @@ RUN git clone --depth 1 https://github.com/MikeMirzayanov/testlib /opt/testlib \
 COPY --from=yuki /out/bin/yuki-tool /usr/local/bin/yuki-tool
 
 ENV CPLUS_INCLUDE_PATH=/opt/ac-library LANG=C.UTF-8
+
+RUN printf '#!/bin/sh\nexec python3 /workspaces/cp-env/tools/cpe "$@"\n' > /usr/local/bin/cpe \
+ && chmod +x /usr/local/bin/cpe
