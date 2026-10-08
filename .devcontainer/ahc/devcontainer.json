@@ -1,7 +1,7 @@
 {
-  "name": "cp-env",
+  "name": "cp-env for AHC",
   "build": {
-    "dockerfile": "../Dockerfile",
+    "dockerfile": "../../Dockerfile",
     "context": ".."
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/cp-env,type=bind",
