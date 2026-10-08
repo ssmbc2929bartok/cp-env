@@ -1,0 +1,51 @@
+# ジャッジ別のコンパイル設定。[profile.名前] を足せば増やせる。
+# 判定は上から順。パスに dirs のフォルダ名が含まれていれば、その設定を使う。
+default = "atcoder"
+
+[common]
+flags = ["-Wall", "-Wextra"]
+defines = ["LOCAL"]
+
+# -d を付けたとき、各プロファイルの flags の代わりに使う
+[debug]
+flags = ["-g", "-O0", "-fsanitize=address,undefined",
+         "-fno-sanitize-recover=all", "-D_GLIBCXX_DEBUG"]
+
+# AHC を AtCoder より先に書く (AtCoder/AHC/ を ahc として扱うため)
+[profile.ahc]
+dirs = ["AHC"]
+std = "gnu++23"
+flags = ["-O2", "-march=native", "-ftrivial-auto-var-init=zero"]
+bundle_acl = false
+
+[profile.atcoder]
+dirs = ["AtCoder"]
+std = "gnu++23"
+flags = ["-O2", "-march=native", "-ftrivial-auto-var-init=zero",
+         "-fconstexpr-depth=1024", "-fconstexpr-loop-limit=524288",
+         "-fconstexpr-ops-limit=2097152"]
+bundle_acl = false
+
+[profile.codeforces]
+dirs = ["Codeforces"]
+std = "gnu++23"
+flags = ["-O2"]
+bundle_acl = true      # ACLが無いので、提出時に展開する
+
+[profile.yukicoder]
+dirs = ["yukicoder"]
+std = "gnu++23"
+flags = ["-O2"]
+bundle_acl = false
+
+[profile.icpc]
+dirs = ["ICPC"]
+std = "gnu++23"
+flags = ["-O2"]
+bundle_acl = true
+
+[profile.setter]
+dirs = ["problems"]
+std = "gnu++23"
+flags = ["-O2"]
+bundle_acl = true
