@@ -1,0 +1,68 @@
+{
+  "name": "cp-env",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/cp-env,type=bind",
+  "workspaceFolder": "/workspaces/cp-env",
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/workspaces/cp-env/tools"
+  },
+  "mounts": [
+    "source=${localEnv:CP_CONTEST_DIR},target=/workspaces/cp-env/contest,type=bind",
+    "source=${localEnv:CP_PROBLEMS_DIR},target=/workspaces/cp-env/problems,type=bind",
+    "source=cp-env-cache,target=/root/.cache,type=volume"
+  ],
+  // Competitive Companion がサンプルを送ってくるポート
+  "appPort": [
+    "127.0.0.1:10043:10043"
+  ],
+  // gdb とサニタイザを動かすための設定
+  "capAdd": [
+    "SYS_PTRACE"
+  ],
+  "securityOpt": [
+    "seccomp=unconfined"
+  ],
+  "init": true,
+  // マウントしたリポジトリで git が「所有者が違う」と拒否するのを防ぐ
+  "postCreateCommand": "git config --global --add safe.directory '*'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools"
+      ],
+      "settings": {
+        "C_Cpp.default.compilerPath": "/usr/local/bin/g++",
+        "C_Cpp.default.cppStandard": "gnu++23",
+        "C_Cpp.default.includePath": [
+          "${workspaceFolder}/library",
+          "/opt/ac-library"
+        ],
+        "C_Cpp.default.defines": [
+          "LOCAL"
+        ],
+        // 生成AI: アルゴリズム用のコンテナでは全部切る (ヒューリスティック用は手順13の別設定)
+        "chat.disableAIFeatures": false,
+        "github.copilot.enable": {
+          "*": false,
+          "cpp": true
+        },
+        "github.copilot.nextEditSuggestions.enabled": true,
+        "chat.agent.enabled": false,
+        // 整形: リポジトリ直下の .clang-format を使う
+        "C_Cpp.formatting": "clangFormat",
+        "C_Cpp.clang_format_style": "file",
+        "[cpp]": {
+          "editor.defaultFormatter": "ms-vscode.cpptools",
+          "editor.formatOnSave": true
+        },
+        "workbench.colorCustomizations": {
+          "statusBar.background": "#b45309",
+          "statusBar.foreground": "#ffffff"
+        }
+      }
+    }
+  }
+}
