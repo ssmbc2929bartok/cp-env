@@ -9,7 +9,9 @@ defines = ["LOCAL"]
 # -d を付けたとき、各プロファイルの flags の代わりに使う
 [debug]
 flags = ["-g", "-O0", "-fsanitize=address,undefined",
-         "-fno-sanitize-recover=all", "-D_GLIBCXX_DEBUG"]
+         "-fno-sanitize-recover=all", "-D_GLIBCXX_DEBUG",
+         "-D_GLIBCXX_DEBUG_BACKTRACE"]
+libs = ["-lstdc++exp"]   # リンク用。コマンドの最後(ソースより後ろ)に付ける
 
 # AHC を AtCoder より先に書く (AtCoder/AHC/ を ahc として扱うため)
 [profile.ahc]
