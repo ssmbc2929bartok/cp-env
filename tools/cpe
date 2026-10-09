@@ -1,27 +1,135 @@
 #!/usr/bin/env python3
-import argparse, hashlib, subprocess, sys, time, tomllib
+"""cpe: 競プロ環境コマンド
+
+使い方:
+  cpe build <ソース> [-p 設定名] [-d] [-v]
+
+設定は cp-env 直下の profiles.toml から読む。
+サブコマンドを足すときは、cmd_xxx 関数を書いて main() に登録する。
+"""
+import argparse
+import hashlib
+import subprocess
+import sys
+import time
+import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-CACHE = Path.home() / ".cache" / "cpe"
+ROOT = Path(__file__).resolve().parent.parent  # cp-env の場所
+CACHE = Path.home() / ".cache" / "cpe"  # 実行ファイルの置き場 (Dropbox の外)
+CXX = "g++"
 
-def load_config() -> dict: ...                      # profiles.toml を読む
-def pick_profile(cfg, src: Path, name=None) -> tuple[str, dict]: ...  # (設定名, 設定)
-def build_command(cfg, prof, src: Path, out: Path, debug: bool) -> list[str]: ...
-def compile_src(cfg, src: Path, name=None, debug=False) -> Path | None: ...  # 失敗時 None
 
-def cmd_build(args) -> int: ...
+def die(msg: str) -> None:
+    """エラーを表示して終了する"""
+    print(f"エラー: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+# ------------------------------------------------------------ 設定
+def load_config() -> dict:
+    """profiles.toml を読む"""
+    path = ROOT / "profiles.toml"
+    if not path.exists():
+        die(f"{path} がありません")
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def pick_profile(cfg: dict, src: Path, name: str | None = None) -> tuple[str, dict]:
+    """使う設定を選ぶ。(設定名, 設定) を返す。
+
+    優先順位: -p の指定 > パスに含まれるフォルダ名 > default
+    フォルダ名は大文字小文字を区別せず、profiles.toml の上から順に判定する。
+    """
+    profiles = cfg.get("profile", {})
+    if not name:
+        parts = [p.lower() for p in src.resolve().parts]
+        for pname, prof in profiles.items():
+            if any(d.lower() in parts for d in prof.get("dirs", [])):
+                name = pname
+                break
+    if not name:
+        name = cfg.get("default", "atcoder")
+    if name not in profiles:
+        die(f"設定 '{name}' は profiles.toml にありません (候補: {', '.join(profiles)})")
+    return name, profiles[name]
+
+
+def build_command(cfg: dict, prof: dict, src: Path, out: Path, debug: bool) -> list[str]:
+    """コンパイルのコマンドを組み立てる"""
+    common = cfg.get("common", {})
+    dbg = cfg.get("debug", {})
+    cmd = [CXX, f"-std={prof.get('std', 'gnu++23')}"]
+    cmd += common.get("flags", [])
+    cmd += dbg.get("flags", []) if debug else prof.get("flags", [])
+    cmd += [f"-D{d}" for d in common.get("defines", [])]
+    lib = ROOT / "library"  # 手順9で作る自作ライブラリ (無ければ付けない)
+    if lib.is_dir():
+        cmd += ["-I", str(lib)]
+    cmd += [str(src), "-o", str(out)]
+    if debug:
+        cmd += dbg.get("libs", [])  # リンク用のフラグはソースより後ろに置く
+    return cmd
+
+
+# ------------------------------------------------------------ コンパイル
+def compile_src(cfg: dict, src: Path, name: str | None = None,
+                debug: bool = False, verbose: bool = False) -> Path | None:
+    """コンパイルして実行ファイルのパスを返す。失敗したら None。"""
+    src = src.resolve()
+    pname, prof = pick_profile(cfg, src, name)
+
+    # 出力先は「ソースの絶対パス + 設定 + デバッグ有無」ごとに分ける
+    key_src = f"{src}|{pname}|{'debug' if debug else 'release'}"
+    key = hashlib.sha1(key_src.encode()).hexdigest()[:16]
+    out = CACHE / "bin" / key / "a.out"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = build_command(cfg, prof, src, out, debug)
+    label = f"[{pname}{'/debug' if debug else ''}] {src.name}"
+    if verbose:
+        print(" ".join(cmd))
+
+    t0 = time.time()
+    result = subprocess.run(cmd)  # エラーメッセージはそのまま画面に出す
+    elapsed = time.time() - t0
+
+    if result.returncode != 0:
+        out.unlink(missing_ok=True)  # 古い実行ファイルを誤って使わないように消す
+        print(f"{label}  コンパイルエラー", file=sys.stderr)
+        return None
+    print(f"{label}  コンパイル {elapsed:.2f}s")
+    return out
+
+
+# ------------------------------------------------------------ サブコマンド
+def cmd_build(args) -> int:
+    src = Path(args.src)
+    if not src.is_file():
+        die(f"{src} がありません")
+    cfg = load_config()
+    out = compile_src(cfg, src, args.profile, args.debug, args.verbose)
+    if out is None:
+        return 1
+    print(out)
+    return 0
+
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="cpe")
+    ap = argparse.ArgumentParser(prog="cpe", description="競プロ環境コマンド")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("build")
-    p.add_argument("src")
-    p.add_argument("-p", "--profile")
-    p.add_argument("-d", "--debug", action="store_true")
+
+    p = sub.add_parser("build", help="コンパイルだけする")
+    p.add_argument("src", help="ソースファイル")
+    p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定)")
+    p.add_argument("-d", "--debug", action="store_true", help="デバッグ用フラグでコンパイル")
+    p.add_argument("-v", "--verbose", action="store_true", help="コンパイルコマンドを表示")
     p.set_defaults(func=cmd_build)
+
     args = ap.parse_args()
     return args.func(args)
+
 
 if __name__ == "__main__":
     sys.exit(main())
