@@ -3,12 +3,25 @@
 
 使い方:
   cpe build <ソース> [-p 設定名] [-d] [-v]
+  cpe test  <ソース> [-p 設定名] [-d] [-c ケース名] [-e 誤差] [-t 秒] [-v]
+  cpe warmup            <bits/stdc++.h> を全設定分、先にコンパイルしておく
+
+ソースと読み込んだファイルが前回から変わっていなければ、コンパイルを省略する (-f で強制)。
+<bits/stdc++.h> は設定ごとに一度だけ事前コンパイルし、以後はそれを使う。
+
+テストケースは「<ソースのあるフォルダ>/tests/<ソース名>/」に置く。
+  例) AtCoder/ABC/abc471/c.cpp → AtCoder/ABC/abc471/tests/c/sample-1.in, sample-1.out
 
 設定は cp-env 直下の profiles.toml から読む。
 サブコマンドを足すときは、cmd_xxx 関数を書いて main() に登録する。
 """
 import argparse
+import fnmatch
 import hashlib
+import json
+import os
+import re
+import signal
 import subprocess
 import sys
 import time
@@ -18,6 +31,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent  # cp-env の場所
 CACHE = Path.home() / ".cache" / "cpe"  # 実行ファイルの置き場 (Dropbox の外)
 CXX = "g++"
+
+
+# ------------------------------------------------------------ 表示
+_COLOR = sys.stdout.isatty() or os.environ.get("CPE_COLOR") == "1"
+
+
+def color(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _COLOR else text
+
+
+def green(t): return color(t, "1;32")
+def red(t): return color(t, "1;31")
+def yellow(t): return color(t, "1;33")
+def dim(t): return color(t, "2")
+
+
+def clip(text: str, max_lines: int = 30, max_cols: int = 200) -> str:
+    """長い入出力を、表示用に切り詰める"""
+    lines = text.splitlines()
+    shown = [ln if len(ln) <= max_cols else ln[:max_cols] + " …" for ln in lines[:max_lines]]
+    if len(lines) > max_lines:
+        shown.append(f"… (残り {len(lines) - max_lines} 行)")
+    return "\n".join(shown)
+
+
+def indent(text: str, n: int = 4) -> str:
+    return "\n".join(" " * n + ln for ln in text.splitlines())
 
 
 def die(msg: str) -> None:
@@ -56,26 +96,126 @@ def pick_profile(cfg: dict, src: Path, name: str | None = None) -> tuple[str, di
     return name, profiles[name]
 
 
-def build_command(cfg: dict, prof: dict, src: Path, out: Path, debug: bool) -> list[str]:
-    """コンパイルのコマンドを組み立てる"""
+def compile_flags(cfg: dict, prof: dict, debug: bool) -> list[str]:
+    """コード生成に関わるフラグ (事前コンパイルにも同じものを使う)"""
     common = cfg.get("common", {})
     dbg = cfg.get("debug", {})
-    cmd = [CXX, f"-std={prof.get('std', 'gnu++23')}"]
-    cmd += common.get("flags", [])
-    cmd += dbg.get("flags", []) if debug else prof.get("flags", [])
-    cmd += [f"-D{d}" for d in common.get("defines", [])]
+    flags = [f"-std={prof.get('std', 'gnu++23')}"]
+    flags += common.get("flags", [])
+    flags += dbg.get("flags", []) if debug else prof.get("flags", [])
+    flags += [f"-D{d}" for d in common.get("defines", [])]
+    return flags
+
+
+def build_command(cfg: dict, prof: dict, src: Path, out: Path, debug: bool,
+                  pch_dir: Path | None = None, depfile: Path | None = None) -> list[str]:
+    """コンパイルのコマンドを組み立てる"""
+    cmd = [CXX] + compile_flags(cfg, prof, debug)
+    if pch_dir:
+        cmd += ["-I", str(pch_dir)]  # 事前コンパイル済みヘッダを、本物より先に見つけさせる
     lib = ROOT / "library"  # 手順9で作る自作ライブラリ (無ければ付けない)
     if lib.is_dir():
         cmd += ["-I", str(lib)]
+    if depfile:
+        cmd += ["-MMD", "-MF", str(depfile)]  # 読み込んだファイルの一覧を書き出させる
     cmd += [str(src), "-o", str(out)]
     if debug:
-        cmd += dbg.get("libs", [])  # リンク用のフラグはソースより後ろに置く
+        cmd += cfg.get("debug", {}).get("libs", [])  # リンク用のフラグはソースより後ろに置く
     return cmd
 
 
+# ------------------------------------------------------------ 事前コンパイル (PCH)
+_cxx_version = None
+
+
+def cxx_version() -> str:
+    global _cxx_version
+    if _cxx_version is None:
+        r = subprocess.run([CXX, "-dumpfullversion"], capture_output=True, text=True)
+        _cxx_version = r.stdout.strip()
+    return _cxx_version
+
+
+def ensure_pch(flags: list[str], quiet: bool = False) -> Path | None:
+    """<bits/stdc++.h> を、このフラグの組で事前コンパイルしておく。
+
+    置き場所のフォルダ (これを -I で渡す) を返す。失敗したら None を返し、
+    通常どおりのコンパイルに任せる (事前コンパイルが無くても結果は同じ)。
+    """
+    if os.environ.get("CPE_NO_PCH") == "1":
+        return None
+    key = hashlib.sha1("\0".join([cxx_version(), *flags]).encode()).hexdigest()[:16]
+    pch_dir = CACHE / "pch" / key
+    gch = pch_dir / "bits" / "stdc++.h.gch"
+    if gch.exists():
+        return pch_dir
+
+    # 本物の bits/stdc++.h の場所を、コンパイラ自身に教えてもらう
+    probe = subprocess.run([CXX, *flags, "-x", "c++", "-E", "-H", "-", "-o", os.devnull],
+                           input="#include <bits/stdc++.h>\n", capture_output=True, text=True)
+    header = next((ln[2:].strip() for ln in probe.stderr.splitlines()
+                   if ln.startswith(". ") and ln.endswith("stdc++.h")), None)
+    if header is None:
+        return None
+
+    if not quiet:
+        print(dim("  <bits/stdc++.h> を事前コンパイル中 (この設定では初回のみ)…"), flush=True)
+    gch.parent.mkdir(parents=True, exist_ok=True)
+    tmp = gch.with_name("stdc++.h.gch.tmp")
+    r = subprocess.run([CXX, *flags, "-x", "c++-header", header, "-o", str(tmp)],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        return None
+    tmp.replace(gch)  # 書き終わってから置くので、途中で止めても壊れた PCH が残らない
+    return pch_dir
+
+
+# ------------------------------------------------------------ 再コンパイルの省略
+def parse_depfile(path: Path) -> list[str]:
+    """g++ -MMD が書き出す依存ファイルから、読み込んだファイルの一覧を取り出す"""
+    text = path.read_text(errors="replace").replace("\\\n", " ")
+    if ":" not in text:
+        return []
+    body = text.split(":", 1)[1]
+    # "\ " はファイル名中の空白 (Dropbox のフォルダ名などに含まれうる)
+    return [t.replace("\\ ", " ") for t in re.split(r"(?<!\\)\s+", body) if t]
+
+
+def file_state(path: str) -> list[int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return [st.st_mtime_ns, st.st_size]
+
+
+def make_stamp(cmd: list[str], depfile: Path) -> dict:
+    """「どのコマンドで、どの状態のファイルからコンパイルしたか」の記録"""
+    deps = parse_depfile(depfile) if depfile.exists() else []
+    return {"cmd": cmd, "deps": {d: file_state(d) for d in deps}}
+
+
+def is_up_to_date(binary: Path, stamp_path: Path, cmd: list[str]) -> bool:
+    """前回と同じコマンドで、読み込むファイルが1つも変わっていなければ True。
+
+    時刻の新旧ではなく「前回記録した時刻・サイズと完全に一致するか」で判定する。
+    Windows とコンテナで時計がずれていても、誤って古い実行ファイルを使わないため。
+    """
+    if not binary.exists() or not stamp_path.exists():
+        return False
+    try:
+        stamp = json.loads(stamp_path.read_text())
+    except ValueError:
+        return False
+    if stamp.get("cmd") != cmd or not stamp.get("deps"):
+        return False
+    return all(file_state(d) == state for d, state in stamp["deps"].items())
+
+
 # ------------------------------------------------------------ コンパイル
-def compile_src(cfg: dict, src: Path, name: str | None = None,
-                debug: bool = False, verbose: bool = False) -> Path | None:
+def compile_src(cfg: dict, src: Path, name: str | None = None, debug: bool = False,
+                verbose: bool = False, force: bool = False) -> Path | None:
     """コンパイルして実行ファイルのパスを返す。失敗したら None。"""
     src = src.resolve()
     pname, prof = pick_profile(cfg, src, name)
@@ -83,13 +223,23 @@ def compile_src(cfg: dict, src: Path, name: str | None = None,
     # 出力先は「ソースの絶対パス + 設定 + デバッグ有無」ごとに分ける
     key_src = f"{src}|{pname}|{'debug' if debug else 'release'}"
     key = hashlib.sha1(key_src.encode()).hexdigest()[:16]
-    out = CACHE / "bin" / key / "a.out"
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    cmd = build_command(cfg, prof, src, out, debug)
+    work = CACHE / "bin" / key
+    work.mkdir(parents=True, exist_ok=True)
+    out, depfile, stamp_path = work / "a.out", work / "a.d", work / "stamp.json"
     label = f"[{pname}{'/debug' if debug else ''}] {src.name}"
+
+    # <bits/stdc++.h> を使っていれば、事前コンパイル済みのものを使う
+    pch_dir = None
+    if "bits/stdc++.h" in src.read_text(errors="replace"):
+        pch_dir = ensure_pch(compile_flags(cfg, prof, debug))
+
+    cmd = build_command(cfg, prof, src, out, debug, pch_dir, depfile)
     if verbose:
         print(" ".join(cmd))
+
+    if not force and is_up_to_date(out, stamp_path, cmd):
+        print(dim(f"{label}  変更なし (コンパイル省略)"))
+        return out
 
     t0 = time.time()
     result = subprocess.run(cmd)  # エラーメッセージはそのまま画面に出す
@@ -97,9 +247,11 @@ def compile_src(cfg: dict, src: Path, name: str | None = None,
 
     if result.returncode != 0:
         out.unlink(missing_ok=True)  # 古い実行ファイルを誤って使わないように消す
+        stamp_path.unlink(missing_ok=True)
         print(f"{label}  コンパイルエラー", file=sys.stderr)
         return None
-    print(f"{label}  コンパイル {elapsed:.2f}s")
+    stamp_path.write_text(json.dumps(make_stamp(cmd, depfile)))
+    print(dim(f"{label}  コンパイル {elapsed:.2f}s"))
     return out
 
 
@@ -109,10 +261,192 @@ def cmd_build(args) -> int:
     if not src.is_file():
         die(f"{src} がありません")
     cfg = load_config()
-    out = compile_src(cfg, src, args.profile, args.debug, args.verbose)
+    out = compile_src(cfg, src, args.profile, args.debug, args.verbose, args.force)
     if out is None:
         return 1
     print(out)
+    return 0
+
+
+# ------------------------------------------------------------ テストケース
+def tests_dir(src: Path) -> Path:
+    """X.cpp のテストケースは、同じフォルダの tests/X/"""
+    src = src.resolve()
+    return src.parent / "tests" / src.stem
+
+
+def natural_key(p: Path):
+    """sample-2 が sample-10 より前に来るよう、数字部分を数として比べる"""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name)]
+
+
+def list_cases(tdir: Path, only: list[str] | None = None) -> list[Path]:
+    """tests/X/*.in を自然順で返す。only があれば名前で絞り込む"""
+    cases = sorted(tdir.glob("*.in"), key=natural_key) if tdir.is_dir() else []
+    if only:
+        picked = []
+        for pat in only:
+            hit = [c for c in cases if fnmatch.fnmatch(c.stem, pat)]  # 完全一致・ワイルドカード
+            hit = hit or [c for c in cases if pat in c.stem]  # 無ければ部分一致
+            picked += [c for c in hit if c not in picked]
+        cases = sorted(picked, key=natural_key)
+    return cases
+
+
+def read_problem_info(tdir: Path) -> dict:
+    """tests/X/problem.json (手順7で保存する問題情報) を読む。無ければ空"""
+    try:
+        return json.loads((tdir / "problem.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+# ------------------------------------------------------------ 実行と判定
+def run_binary(binary: Path, stdin_data: bytes, tl: float):
+    """実行して (状態, 標準出力, 標準エラー, 秒) を返す。状態は OK / TLE / RE(理由)"""
+    t0 = time.perf_counter()
+    try:
+        r = subprocess.run([str(binary)], input=stdin_data, capture_output=True, timeout=tl)
+    except subprocess.TimeoutExpired as e:
+        return "TLE", e.stdout or b"", e.stderr or b"", time.perf_counter() - t0
+    elapsed = time.perf_counter() - t0
+    if r.returncode != 0:
+        if r.returncode < 0:  # シグナルで落ちた (SIGSEGV など)
+            try:
+                why = signal.Signals(-r.returncode).name
+            except ValueError:
+                why = f"signal {-r.returncode}"
+        else:
+            why = f"exit {r.returncode}"
+        return f"RE({why})", r.stdout, r.stderr, elapsed
+    return "OK", r.stdout, r.stderr, elapsed
+
+
+_FLOAT = re.compile(r"[+-]?(\d+\.\d*|\.\d+|\d+)([eE][+-]?\d+)?")
+
+
+def is_float_token(s: str) -> bool:
+    """小数として扱うトークンか (小数点か指数を含む数)"""
+    return bool(_FLOAT.fullmatch(s)) and ("." in s or "e" in s.lower())
+
+
+def same_output(expected: str, actual: str, eps: float) -> bool:
+    """空白区切りのトークン単位で比較する。
+    小数を含むトークンは、絶対誤差または相対誤差が eps 以下なら一致とみなす。"""
+    e, a = expected.split(), actual.split()
+    if len(e) != len(a):
+        return False
+    for x, y in zip(e, a):
+        if x == y:
+            continue
+        if eps > 0 and (is_float_token(x) or is_float_token(y)):
+            try:
+                fx, fy = float(x), float(y)
+            except ValueError:
+                return False
+            if abs(fx - fy) <= eps * max(1.0, abs(fx)):
+                continue
+        return False
+    return True
+
+
+def decode(b: bytes) -> str:
+    return b.decode("utf-8", errors="replace")
+
+
+def cmd_test(args) -> int:
+    src = Path(args.src)
+    if not src.is_file():
+        die(f"{src} がありません")
+    cfg = load_config()
+    tdir = tests_dir(src)
+    info = read_problem_info(tdir)
+
+    binary = compile_src(cfg, src, args.profile, args.debug, args.verbose, args.force)
+    if binary is None:
+        return 1
+
+    if info.get("interactive"):
+        print(yellow("インタラクティブ問題です。自動判定はできないので、手で実行して確認してください。"))
+        return 0
+
+    cases = list_cases(tdir, args.case)
+    if not cases:
+        where = tdir if not args.case else f"{tdir} (絞り込み: {', '.join(args.case)})"
+        print(yellow(f"テストケースがありません: {where}/*.in"))
+        return 1
+
+    # 時間制限: -t > problem.json の timeLimit (ミリ秒) > 2秒
+    tl = args.tl if args.tl else info.get("timeLimit", 2000) / 1000
+    run_tl = tl * 10 if args.debug else tl  # サニタイザ付きは遅いので緩める
+
+    width = max(len(c.stem) for c in cases)
+    n_ac = n_judged = 0
+    for case in cases:
+        data = case.read_bytes()
+        exp_path = case.with_suffix(".out")
+        status, out_b, err_b, elapsed = run_binary(binary, data, run_tl)
+        out, err = decode(out_b), decode(err_b)
+
+        show_detail = False
+        if status != "OK":
+            verdict = yellow(f"{status:<4}")
+            n_judged += 1
+            show_detail = True
+        elif not exp_path.exists():
+            verdict = dim("--  ")  # 期待出力なし: 判定しない
+        elif same_output(exp_path.read_text(errors="replace"), out, args.eps):
+            verdict = green("AC  ")
+            n_judged += 1
+            n_ac += 1
+        else:
+            verdict = red("WA  ")
+            n_judged += 1
+            show_detail = True
+
+        ms = f"{elapsed * 1000:6.0f} ms" if status != "TLE" else f">{run_tl * 1000:5.0f} ms"
+        print(f"  {case.stem:<{width}}  {verdict}  {ms}")
+
+        if show_detail or args.verbose:
+            print(dim("    --- 入力 ---"))
+            print(indent(clip(decode(data))))
+            if exp_path.exists():
+                print(dim("    --- 期待 ---"))
+                print(indent(clip(exp_path.read_text(errors="replace"))))
+        if show_detail or args.verbose or not exp_path.exists():
+            print(dim("    --- 出力 ---"))
+            print(indent(clip(out)) if out.strip() else dim("    (出力なし)"))
+        if err.strip():
+            print(dim("    --- 標準エラー ---"))
+            print(dim(indent(clip(err))))
+
+    if n_judged == 0:
+        print(dim("判定対象なし (期待出力 .out のあるケースがありません)"))
+        return 0
+    ok = n_ac == n_judged
+    msg = f"結果: {n_ac}/{n_judged} AC"
+    if not ok:
+        msg += f"  (時間制限 {tl:g}s" + (" ×10 (デバッグ)" if args.debug else "") + ")"
+    print(green(msg) if ok else red(msg))
+    return 0 if ok else 1
+
+def cmd_warmup(args) -> int:
+    """全設定 (通常・デバッグ) の <bits/stdc++.h> を事前コンパイルする。コンテスト前の準備用"""
+    cfg = load_config()
+    done = {}
+    for pname, prof in cfg.get("profile", {}).items():
+        for debug in (False, True):
+            flags = compile_flags(cfg, prof, debug)
+            key = tuple(flags)
+            label = f"{pname}{'/debug' if debug else ''}"
+            if key in done:  # 同じフラグの組は1つで足りる
+                print(f"  {label:<18} {dim('(' + done[key] + ' と共通)')}")
+                continue
+            t0 = time.time()
+            ok = ensure_pch(flags, quiet=True) is not None
+            done[key] = label
+            res = green("OK") if ok else red("失敗 (通常のコンパイルで動きます)")
+            print(f"  {label:<18} {res}  {time.time() - t0:.1f}s", flush=True)
     return 0
 
 
@@ -125,11 +459,31 @@ def main() -> int:
     p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定)")
     p.add_argument("-d", "--debug", action="store_true", help="デバッグ用フラグでコンパイル")
     p.add_argument("-v", "--verbose", action="store_true", help="コンパイルコマンドを表示")
+    p.add_argument("-f", "--force", action="store_true", help="変更がなくてもコンパイルし直す")
     p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("test", help="tests/<ソース名>/ のケースを全部流して判定する")
+    p.add_argument("src", help="ソースファイル")
+    p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定)")
+    p.add_argument("-d", "--debug", action="store_true", help="デバッグ用フラグでコンパイル")
+    p.add_argument("-c", "--case", action="append", help="実行するケース名 (ワイルドカード・部分一致可、複数指定可)")
+    p.add_argument("-e", "--eps", type=float, default=1e-6, help="小数の許容誤差 (既定 1e-6、0 で厳密比較)")
+    p.add_argument("-t", "--tl", type=float, help="時間制限 [秒] (既定は problem.json、無ければ 2)")
+    p.add_argument("-v", "--verbose", action="store_true", help="AC のケースも入出力を表示")
+    p.add_argument("-f", "--force", action="store_true", help="変更がなくてもコンパイルし直す")
+    p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("warmup", help="<bits/stdc++.h> を全設定分、先にコンパイルしておく")
+    p.set_defaults(func=cmd_warmup)
 
     args = ap.parse_args()
     return args.func(args)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:  # Ctrl-C で止めたとき、長いエラー表示を出さない
+        sys.exit(130)
+    except BrokenPipeError:  # | head などで出力を途中で切ったとき
+        sys.exit(0)

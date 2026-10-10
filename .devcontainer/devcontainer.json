@@ -18,6 +18,10 @@
   "appPort": [
     "127.0.0.1:10043:10043"
   ],
+  "containerEnv": {
+    "CPE_PORT": "10043",
+    "CPE_MODE": "algorithm"
+  },
   // gdb とサニタイザを動かすための設定
   "capAdd": [
     "SYS_PTRACE"

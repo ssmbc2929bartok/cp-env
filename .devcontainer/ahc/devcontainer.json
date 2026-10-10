@@ -16,8 +16,12 @@
   ],
   // Competitive Companion がサンプルを送ってくるポート
   "appPort": [
-    "127.0.0.1:10043:10043"
+    "127.0.0.1:10044:10044"
   ],
+  "containerEnv": {
+    "CPE_PORT": "10044",
+    "CPE_MODE": "heuristic"
+  },
   // gdb とサニタイザを動かすための設定
   "capAdd": [
     "SYS_PTRACE"
