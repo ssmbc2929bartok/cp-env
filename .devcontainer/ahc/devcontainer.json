@@ -5,7 +5,7 @@
     "context": ".."
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/cp-env,type=bind",
-  "workspaceFolder": "/workspaces/cp-env",
+  "workspaceFolder": "/workspaces/cp-env/contest/AtCoder/AHC",
   "remoteEnv": {
     "PATH": "${containerEnv:PATH}:/workspaces/cp-env/tools"
   },
