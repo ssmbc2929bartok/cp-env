@@ -6,6 +6,7 @@
   cpe test  <ソース> [-p 設定名] [-d] [-c ケース名] [-e 誤差] [-t 秒] [-v]
   cpe warmup            <bits/stdc++.h> を全設定分、先にコンパイルしておく
   cpe listen            Competitive Companion からサンプルを受け取って保存する
+  cpe vscode            cp-env/vscode/ の原本を、各作業フォルダの .vscode/ に書き出す
 
 ソースと読み込んだファイルが前回から変わっていなければ、コンパイルを省略する (-f で強制)。
 <bits/stdc++.h> は設定ごとに一度だけ事前コンパイルし、以後はそれを使う。
@@ -562,6 +563,52 @@ def cmd_listen(args) -> int:
     return 0
 
 
+# ------------------------------------------------------------ VS Code の設定を配る
+GENERATED_MARK = "cpe vscode が生成"
+
+
+def vscode_targets() -> list[Path]:
+    """.vscode/ を書き出す作業フォルダ (VS Code で一番上に表示するフォルダ)"""
+    return [
+        CONTEST_ROOT,  # アルゴリズム用のコンテナ
+        CONTEST_ROOT / "AtCoder" / "AHC",  # ヒューリスティック用のコンテナ
+        ROOT / "problems",  # 作問
+        ROOT,  # cp-env 自体の手入れ
+    ]
+
+
+def cmd_vscode(args) -> int:
+    src_dir = ROOT / "vscode"
+    originals = sorted(p for p in src_dir.glob("*") if p.is_file()) if src_dir.is_dir() else []
+    if not originals:
+        die(f"原本がありません: {src_dir}/")
+    ng = 0
+    for target in vscode_targets():
+        if not target.is_dir():
+            print(dim(f"  {target}  (フォルダが無いので飛ばします)"))
+            continue
+        dest_dir = target / ".vscode"
+        dest_dir.mkdir(exist_ok=True)
+        for orig in originals:
+            dest = dest_dir / orig.name
+            body = orig.read_text(encoding="utf-8")
+            mark = f"// {GENERATED_MARK}。ここを直接編集しないでください (原本: cp-env/vscode/{orig.name})\n"
+            text = mark + body
+            if dest.exists():
+                old = dest.read_text(encoding="utf-8", errors="replace")
+                if old == text:
+                    print(dim(f"  {dest}  (変更なし)"))
+                    continue
+                if GENERATED_MARK not in old and not args.force:
+                    # 自分で書いた設定を消さないよう、cpe が作ったもの以外は上書きしない
+                    print(yellow(f"  {dest}  (自作のファイルがあるので飛ばしました。上書きするなら -f)"))
+                    ng += 1
+                    continue
+            dest.write_text(text, encoding="utf-8", newline="\n")
+            print(f"  {dest}  書き出しました")
+    return 1 if ng else 0
+
+
 def cmd_warmup(args) -> int:
     """全設定 (通常・デバッグ) の <bits/stdc++.h> を事前コンパイルする。コンテスト前の準備用"""
     cfg = load_config()
@@ -613,6 +660,10 @@ def main() -> int:
     p.add_argument("--mode", choices=["algorithm", "heuristic"], help="担当 (既定は環境変数 CPE_MODE)")
     p.add_argument("--host", default="0.0.0.0", help="待ち受けるアドレス (コンテナ内では 0.0.0.0)")
     p.set_defaults(func=cmd_listen)
+
+    p = sub.add_parser("vscode", help="cp-env/vscode/ の原本を、各作業フォルダの .vscode/ に書き出す")
+    p.add_argument("-f", "--force", action="store_true", help="自作のファイルがあっても上書きする")
+    p.set_defaults(func=cmd_vscode)
 
     args = ap.parse_args()
     return args.func(args)

@@ -1,0 +1,40 @@
+{
+  // VS Code のタスク (原本)。cpe vscode で各作業フォルダの .vscode/ に書き出す。
+  // Ctrl+Shift+B で「cpe: test」が動く。それ以外は「タスクの実行」から選ぶ。
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cpe: test",
+      "detail": "開いているファイルのサンプルを全部流して判定する",
+      "type": "process",
+      "command": "cpe",
+      "args": ["test", "${file}"],
+      "options": { "cwd": "${fileDirname}" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
+      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+    },
+    {
+      "label": "cpe: test (debug)",
+      "detail": "デバッグ用フラグ (配列外参照などを検出) で判定する",
+      "type": "process",
+      "command": "cpe",
+      "args": ["test", "${file}", "-d"],
+      "options": { "cwd": "${fileDirname}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
+      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+    },
+    {
+      "label": "cpe: build",
+      "detail": "コンパイルだけする",
+      "type": "process",
+      "command": "cpe",
+      "args": ["build", "${file}"],
+      "options": { "cwd": "${fileDirname}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
+      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+    }
+  ]
+}
