@@ -47,7 +47,7 @@ flags = ["-O2"]
 bundle_acl = true
 
 [profile.setter]
-dirs = ["problems"]
+dirs = ["sakumon"]
 std = "gnu++23"
 flags = ["-O2"]
 bundle_acl = true

@@ -37,7 +37,7 @@ Docker と VS Code Dev Containers で作る、C++ の競技プログラミング
    | 環境変数 | 内容 |
    |---|---|
    | `CP_CONTEST_DIR` | コンテストのソースを置くフォルダ(Dropbox などで同期しているフォルダでも可) |
-   | `CP_PROBLEMS_DIR` | 作問用のフォルダ(作問をしない場合は、空のフォルダで構いません) |
+   | `CP_PROBLEMS_DIR` | 作問用のフォルダ。コンテナの中では `sakumon/` として見えます(作問をしない場合は、空のフォルダで構いません) |
 
    Windows(PowerShell):
 
@@ -103,6 +103,8 @@ Docker と VS Code Dev Containers で作る、C++ の競技プログラミング
 | `cpe libtest [名前...]` | 自作ライブラリのテスト(`tests/test_*.cpp`)を実行する。`-r` で通常のフラグ |
 | `cpe warmup` | `<bits/stdc++.h>` を全設定分、先にコンパイルしておく |
 | `cpe listen` | Competitive Companion からサンプルを受け取って保存する |
+| `cpe fetch <ソース>` | 次に受信する1問を、URL から決まる場所ではなく、指定したソースの問題として保存する |
+| `cpe focus [フォルダ...]` | VS Code のエクスプローラーに、指定したフォルダだけを表示する。引数なしで全表示に戻す |
 | `cpe vscode` | タスク(`vscode/` の原本)と、`library/`・`templates/` から作ったスニペットを、各作業フォルダの `.vscode/` に書き出す |
 
 - `[ソース]` を省略すると、今いるフォルダで最後に保存した `.cpp` を使います。拡張子 `.cpp` も省略できます(`cpe test C`)。
@@ -111,7 +113,7 @@ Docker と VS Code Dev Containers で作る、C++ の競技プログラミング
 - 実行ファイルは `~/.cache/cpe/` に置くので、コンテスト用のフォルダには入りません。
 - 期待する出力(`.out`)が無いケースは、判定せずに出力だけを表示します。
 
-VS Code のタスク(「タスクの実行」から選ぶ):`cpe: test`(Ctrl+Shift+B)、`cpe: test (debug)`、`cpe: build`、`cpe: bundle`、`cpe: run`、`cpe: add`
+VS Code のタスク(「タスクの実行」から選ぶ):`cpe: test`(Ctrl+Shift+B)、`cpe: test (debug)`、`cpe: build`、`cpe: bundle`、`cpe: run`、`cpe: fetch`、`cpe: add`
 
 ### フォルダの並び
 
@@ -138,6 +140,30 @@ contest/AtCoder/ABC/478/
 | その他 | `Others/<サイト>/<問題名>.cpp` |
 
 2つのコンテナを同時に開いているときは、AHC の問題はヒューリスティック用、それ以外はアルゴリズム用のコンテナが保存します。
+
+### 好きな名前のファイルで解く(精進など)
+
+過去問を自分で決めた場所と名前(例:`AtCoder/drill/BS/11.cpp`)で解きたいときは、`cpe fetch` を使います。次に受信する1問だけが、URL から決まる場所ではなく、指定したファイルの問題として保存されます。
+
+1. ファイルを作って開きます(無ければ、受信したときにテンプレートから作られます)。
+2. タスク「cpe: fetch」を実行します(ターミナルからは `cpe fetch AtCoder/drill/BS/11.cpp`)。
+3. ブラウザで問題のページを開き、Competitive Companion のボタンを押します。
+
+サンプルは、そのファイルと同じフォルダの `tests/11/` に入ります。あとは Ctrl+Shift+B でいつもどおりテストできます。300秒以内に届かなければ取り消され、次の受信は通常どおりの場所に保存されます。
+
+### 表示するフォルダを絞る
+
+エクスプローラーに、今解いているフォルダだけを表示できます。ウィンドウを開き直す必要はありません。
+
+```bash
+cpe focus AtCoder/ABC
+```
+
+- `cpe focus abc` や `cpe focus drill` のように、途中を省いた名前でも指定できます(大文字と小文字は区別しません)。
+- `cpe focus drill AtCoder/ABC/478` のように、複数を指定できます。
+- `cpe focus` だけを実行すると、全部の表示に戻ります。
+- 絞っている間に、隠れた場所の問題を受信すると、その問題のフォルダも表示に加わります。
+- 設定はコンテナの中(VS Code のリモート設定の `files.exclude`)に書きます。コンテスト用のフォルダ(Dropbox)には何も書かないので、ほかの PC には影響しません。コンテナをリビルドすると、全部の表示に戻ります。
 
 ## ライブラリとテンプレート
 
@@ -194,7 +220,7 @@ UnionFind・セグメント木・modint などは、AtCoder Library を使いま
 | `codeforces` | `Codeforces` | `-O2` | 展開する |
 | `yukicoder` | `yukicoder` | `-O2` | そのまま |
 | `icpc` | `ICPC` | `-O2` | 展開する |
-| `setter` | `problems` | `-O2` | 展開する |
+| `setter` | `sakumon` | `-O2` | 展開する |
 
 `-d` を付けると、追加のフラグの代わりにデバッグ用フラグ(`-g -O0 -fsanitize=address,undefined -D_GLIBCXX_DEBUG` など)を使います。
 

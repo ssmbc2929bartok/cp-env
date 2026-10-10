@@ -11,7 +11,7 @@
   },
   "mounts": [
     "source=${localEnv:CP_CONTEST_DIR},target=/workspaces/cp-env/contest,type=bind",
-    "source=${localEnv:CP_PROBLEMS_DIR},target=/workspaces/cp-env/problems,type=bind",
+    "source=${localEnv:CP_PROBLEMS_DIR},target=/workspaces/cp-env/sakumon,type=bind",
     "source=cp-env-cache,target=/root/.cache,type=volume"
   ],
   // Competitive Companion がサンプルを送ってくるポート

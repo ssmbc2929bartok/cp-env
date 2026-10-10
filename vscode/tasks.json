@@ -59,6 +59,17 @@
       "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
     },
     {
+      "label": "cpe: fetch",
+      "detail": "次に受信する1問を、開いているファイルの問題として受け取る (drill など、好きな名前で解くとき)",
+      "type": "process",
+      "command": "cpe",
+      "args": ["fetch", "${file}"],
+      "options": { "cwd": "${fileDirname}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
+      "problemMatcher": []
+    },
+    {
       "label": "cpe: add",
       "detail": "自作の入力を足す (ターミナルに貼り付けて Ctrl+D)",
       "type": "process",
