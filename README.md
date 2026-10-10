@@ -12,6 +12,7 @@ Docker と VS Code Dev Containers で作る、C++ の競技プログラミング
 - 配列外参照や符号付きオーバーフローをデバッグ用フラグで検出し、原因の行を要約して表示する(`cpe test -d`)
 - 愚直解と突き合わせて、出力が食い違う入力を乱数で探す(`cpe stress`)
 - `#include` を展開して、提出用の1ファイルを作る(`cpe bundle`)
+- 自作ライブラリとテンプレートを、VS Code のスニペットとして呼び出す(原本の `.hpp` から自動生成)
 - ジャッジごとのコンパイル設定を、フォルダ名から自動で選ぶ
 - 生成AIの扱いが違う2つのコンテナ(アルゴリズム用・ヒューリスティック用)を使い分ける
 
@@ -71,7 +72,7 @@ Docker と VS Code Dev Containers で作る、C++ の競技プログラミング
    cpe warmup
    ```
 
-   - `cpe vscode`:VS Code のタスクを、各作業フォルダの `.vscode/` に書き出します。
+   - `cpe vscode`:VS Code のタスクとスニペットを、各作業フォルダの `.vscode/` に書き出します。
    - `cpe warmup`:`<bits/stdc++.h>` を先にコンパイルしておきます(以後のコンパイルが速くなります)。
 
 5. Competitive Companion の設定で、カスタムポートに `10044` を足します(`10043` は最初から入っています)。
@@ -99,9 +100,10 @@ Docker と VS Code Dev Containers で作る、C++ の競技プログラミング
 | `cpe stress <解> <愚直解> <生成器>` | 生成器に通し番号を渡して入力を作り、2つの出力が食い違うまで回す。見つけた入力は `stress-N.in` / `.out` に保存する |
 | `cpe bundle [ソース]` | `#include "..."` を展開して `submit/<ソース名>.cpp` を作り、提出先と同じ条件でコンパイルできるかを確かめる |
 | `cpe build [ソース]` | コンパイルだけする |
+| `cpe libtest [名前...]` | 自作ライブラリのテスト(`tests/test_*.cpp`)を実行する。`-r` で通常のフラグ |
 | `cpe warmup` | `<bits/stdc++.h>` を全設定分、先にコンパイルしておく |
 | `cpe listen` | Competitive Companion からサンプルを受け取って保存する |
-| `cpe vscode` | `vscode/` の原本を、各作業フォルダの `.vscode/` に書き出す |
+| `cpe vscode` | タスク(`vscode/` の原本)と、`library/`・`templates/` から作ったスニペットを、各作業フォルダの `.vscode/` に書き出す |
 
 - `[ソース]` を省略すると、今いるフォルダで最後に保存した `.cpp` を使います。拡張子 `.cpp` も省略できます(`cpe test C`)。
 - `cpe b`・`cpe t`・`cpe r` は、それぞれ `build`・`test`・`run` の短い書き方です。
@@ -137,12 +139,47 @@ contest/AtCoder/ABC/478/
 
 2つのコンテナを同時に開いているときは、AHC の問題はヒューリスティック用、それ以外はアルゴリズム用のコンテナが保存します。
 
+## ライブラリとテンプレート
+
+### ライブラリ(`library/`)
+
+グラフ(BFS・Dijkstra法・LCA など)、累積和、二分探索、素因数分解、二項係数、AHC 用の乱数や焼きなまし法の雛形などを、1ファイル1機能で置いています。一覧と使い方は [library/README.md](library/README.md) にあります。
+
+使い方は2通りです。
+
+- **スニペットで貼る**:`.cpp` で名前(`dijkstra` など)を打って候補から選ぶと、中身が貼り付けられます。そのまま提出できます。
+- **`#include` で読み込む**:`#include "graph/dijkstra.hpp"` と書き、提出の前に `cpe bundle` で1ファイルに展開します。
+
+UnionFind・セグメント木・modint などは、AtCoder Library を使います。
+
+### テンプレート(`templates/`)
+
+| ファイル | スニペット名 | 用途 |
+|---|---|---|
+| `atcoder.cpp` | `AtCoder` | AtCoder の標準 |
+| `acl.cpp` | `ACL` | `using namespace atcoder;` と `mint` つき |
+| `interactive.cpp` | `interactive` | インタラクティブ問題(出力は `endl`) |
+| `codeforces.cpp` | `Codeforces` | 複数テストケース(`solve()` を T 回呼ぶ) |
+| `ahc.cpp` | `AHC` | AHC(事前に用意したコードの URL つき) |
+| `yukicoder.cpp` | `yukicoder` | yukicoder |
+| `icpc.cpp` | `ICPC` | データセットを終わりまで繰り返す |
+| `validator.cpp` | `validator` | 作問用の validator(testlib) |
+| `generator.cpp` | `generator` | 作問用の generator(testlib)。`cpe stress` の生成器にも使える |
+
+- 問題を受信したときと `cpe new` では、設定名と同じ名前のテンプレートが自動で選ばれます(`AtCoder/` の下なら `atcoder.cpp`、`Codeforces/` の下なら `codeforces.cpp`)。インタラクティブ問題の受信時は `interactive.cpp` です。
+- それ以外は、`cpe new A.cpp -t acl` のように名前で指定するか、スニペットで呼び出します。
+
+### テスト
+
+ライブラリは、小さなランダム入力で愚直な解法と突き合わせるテストを `tests/` に置いています。`cpe libtest` で全部を実行します。
+
 ## 設定を変える
 
 | 変えたいもの | 場所 |
 |---|---|
 | ジャッジ別のコンパイル設定 | `profiles.toml` |
 | ソースを新しく作るときのテンプレート | `templates/<設定名>.cpp`(無ければ `templates/default.cpp`。インタラクティブ問題の受信時は `templates/interactive.cpp` を優先) |
+| ライブラリとスニペット | `library/<分野>/<名前>.hpp`(変更後に `cpe libtest` と `cpe vscode`) |
 | 整形のルール | `.clang-format` |
 | VS Code のタスク | `vscode/tasks.json`(変更後に `cpe vscode`) |
 | コンテナの設定 | `.devcontainer/devcontainer.json` と `.devcontainer/ahc/devcontainer.json` の両方 |
@@ -172,7 +209,7 @@ contest/AtCoder/ABC/478/
 
 - ヒューリスティック用の設定は、短期AHCのルール(指定された補完機能だけ可)に合わせています。
 - ルールは更新されます。コンテストの前に、[AtCoder生成AI対策ルール](https://info.atcoder.jp/entry/llm-rules-ja)・[短期AHCのルール](https://info.atcoder.jp/entry/short-ahc-llm-rules-ja)・[長期AHCのルール](https://info.atcoder.jp/entry/ahc-llm-rules-ja) の最新版を確認してください。
-- このリポジトリには、生成AI(Claude)を使って書いたコードが含まれます(`tools/cpe` など)。
+- このリポジトリには、生成AI(Claude)を使って書いたコードが含まれます(`tools/cpe`、`library/`、`tests/`、`templates/` の一部)。短期AHCで `library/` や `templates/` のコードを使うときは、提出コードにこのリポジトリの URL を書きます(`templates/ahc.cpp` には最初から入っています)。
 
 ## 入っているもの
 
@@ -191,7 +228,7 @@ ACL・testlib・yuki-tool は、イメージのビルド時に取得します。
 - Windows 11 + Docker Desktop(WSL 2)+ VS Code の Dev Containers 拡張
 - macOS(Apple Silicon)は未確認です。ARM では `-march=native` の結果などが AtCoder 本番(x86-64)と変わるため、実行速度は参考程度にしてください。
 
-自作ライブラリ(`library/`)と、AHC のローカルテストは準備中です。
+AHC のローカルテスト(配布される入力とスコア計算ツールを使った評価)は準備中です。
 
 ## ライセンス
 

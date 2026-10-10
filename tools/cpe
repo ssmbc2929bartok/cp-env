@@ -9,9 +9,11 @@
   cpe new    <ファイル>... [-t テンプレート名]     テンプレートからソースを作る
   cpe stress <解> <愚直解> <生成器> [-n 回数] [-d]  2つの出力が食い違う入力を、乱数で探す
   cpe bundle [ソース] [-p 設定名]                  #include を展開して submit/<ソース名>.cpp を作る
+  cpe libtest [名前...] [-r]                       自作ライブラリのテスト (tests/test_*.cpp) を実行する
   cpe warmup            <bits/stdc++.h> を全設定分、先にコンパイルしておく
   cpe listen            Competitive Companion からサンプルを受け取って保存する
-  cpe vscode            cp-env/vscode/ の原本を、各作業フォルダの .vscode/ に書き出す
+  cpe vscode            タスク (cp-env/vscode/) と、library/・templates/ から作ったスニペットを、
+                        各作業フォルダの .vscode/ に書き出す
 
 [ソース] を省略すると、今いるフォルダで最後に保存した .cpp を使う。拡張子 .cpp も省略できる。
 build・test・run は、頭文字だけ (cpe b / cpe t / cpe r) でも呼べる。
@@ -1008,6 +1010,7 @@ def cmd_vscode(args) -> int:
     if snippets:
         files.append((SNIPPET_FILE, snippets, "cp-env/library/ と cp-env/templates/"))
     ng = 0
+    wrote_snippets = False
     for target in vscode_targets():
         if not target.is_dir():
             print(dim(f"  {target}  (フォルダが無いので飛ばします)"))
@@ -1030,6 +1033,10 @@ def cmd_vscode(args) -> int:
                     continue
             dest.write_text(text, encoding="utf-8", newline="\n")
             print(f"  {dest}  書き出しました")
+            wrote_snippets |= name == SNIPPET_FILE
+    if wrote_snippets:
+        # VS Code は、あとから増えたスニペットのファイルに気づかないことがある (特に Windows のフォルダをマウントしたとき)
+        print("スニペットが候補に出ないときは、VS Code で F1 →「ウィンドウの再読み込み」(Reload Window) を実行してください")
     return 1 if ng else 0
 
 
