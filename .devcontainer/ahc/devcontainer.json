@@ -56,6 +56,12 @@
         },
         "github.copilot.nextEditSuggestions.enabled": true,
         "chat.agent.enabled": false,
+        // 設定用のフォルダは、ふだんはエクスプローラーに出さない (手入れのときは cpe focus --all で表示する)。
+        // cpe focus がこの項目を書き換える。隠すものを変えるときは tools/cpe の ALWAYS_HIDDEN も直す
+        "files.exclude": {
+          "**/.vscode": true,
+          "**/.devcontainer": true
+        },
         // 整形: リポジトリ直下の .clang-format を使う
         "C_Cpp.formatting": "clangFormat",
         "C_Cpp.clang_format_style": "file",

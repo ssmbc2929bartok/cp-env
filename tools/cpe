@@ -13,7 +13,8 @@
   cpe warmup            <bits/stdc++.h> を全設定分、先にコンパイルしておく
   cpe listen            Competitive Companion からサンプルを受け取って保存する
   cpe fetch <ソース>    次に受信する1問を、URL から決まる場所ではなく、指定したソースの問題として保存する
-  cpe focus [フォルダ...]  VS Code のエクスプローラーに、指定したフォルダだけを表示する (引数なしで全表示)
+  cpe focus [フォルダ...]  VS Code のエクスプローラーに、指定したフォルダだけを表示する
+                        (引数なしで、ふだんの表示。--all で .vscode なども含めてすべて表示)
   cpe vscode            タスク (cp-env/vscode/) と、library/・templates/ から作ったスニペットを、
                         各作業フォルダの .vscode/ に書き出す
 
@@ -1013,38 +1014,63 @@ def machine_settings_path() -> Path:
     return Path(os.environ.get("CPE_VSCODE_SETTINGS") or Path.home() / ".vscode-server/data/Machine/settings.json")
 
 
+# ふだんから隠しておくもの (設定用のフォルダは、解くときには邪魔なので)。手入れのときは cpe focus --all で表示する。
+# 隠すのはエクスプローラーの表示だけで、VS Code はタスクやスニペットを今までどおり読み込む。
+# devcontainer.json の files.exclude にも同じものを書いてある (コンテナを作った直後から隠すため)
+ALWAYS_HIDDEN = ["**/.vscode", "**/.devcontainer"]
+
+
+def focus_base() -> Path:
+    """絞り込みで扱う、いちばん外側のフォルダ (ふつうは cp-env)"""
+    return ROOT if CONTEST_ROOT.is_relative_to(ROOT) else CONTEST_ROOT
+
+
+def focus_roots() -> list[Path]:
+    """VS Code で一番上に開くフォルダの候補。files.exclude は「開いたフォルダからの位置」で書くので、候補ごとに作る。
+
+    ヒューリスティック用のコンテナ (一番上は AtCoder/AHC) では、cp-env 直下の名前 (tools、tests など) を入れない。
+    AHC のフォルダに同じ名前のものがあると、巻き添えで隠れてしまうため。
+    """
+    roots = [CONTEST_ROOT, CONTEST_ROOT / "AtCoder" / "AHC"]
+    if MODE != "heuristic" and focus_base() != CONTEST_ROOT:
+        roots.insert(0, focus_base())
+    return roots
+
+
 def focus_patterns(dirs: list[Path]) -> dict[str, bool]:
-    """dirs (contest の中のフォルダ) へ行く道筋だけを残して、それ以外を隠す files.exclude を作る"""
+    """dirs へ行く道筋だけを残して、それ以外をすべて隠す files.exclude を作る"""
+    base = focus_base()
     keep = set(dirs)  # 表示したままにするフォルダ (dirs と、そこへ行く途中のフォルダ)
     for d in dirs:
-        keep.update(p for p in d.parents if p.is_relative_to(CONTEST_ROOT))
-    base = ROOT if CONTEST_ROOT.is_relative_to(ROOT) else CONTEST_ROOT
+        keep.update(p for p in d.parents if p.is_relative_to(base))
+    roots = focus_roots()
     patterns = {}
     for parent in sorted(keep - set(dirs)):  # 途中のフォルダでは、道筋から外れたものを隠す
         for entry in parent.iterdir():
-            if entry in keep or entry.name.startswith(".") or any(ch in entry.name for ch in "*?[]{}"):
+            if entry in keep or any(ch in entry.name for ch in "*?[]{}"):
                 continue
-            # VS Code で一番上に開いているフォルダがどれでも効くよう、途中から数えた形も入れる
-            # (例: contest/AtCoder/ADC、AtCoder/ADC、ADC)
-            parts = entry.relative_to(base).parts
-            for i in range(len(parts)):
-                patterns["/".join(parts[i:])] = True
+            for root in roots:  # 例: cp-env を開いていれば contest/AtCoder/ADC、contest を開いていれば AtCoder/ADC
+                if entry != root and entry.is_relative_to(root):
+                    patterns[entry.relative_to(root).as_posix()] = True
     return patterns
 
 
-def apply_focus(dirs: list[Path]) -> bool:
-    """表示を dirs に絞る (空なら全表示に戻す)。VS Code の設定ファイルが無ければ False"""
+def apply_focus(dirs: list[Path], show_all: bool = False) -> bool:
+    """エクスプローラーの表示を切り替える。VS Code の設定ファイルが無ければ False。
+    dirs があればそこだけ、無ければふだんの表示 (ALWAYS_HIDDEN だけ隠す)、show_all なら何も隠さない"""
     path = machine_settings_path()
     try:
         settings = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
+    exclude = {} if show_all else dict.fromkeys(ALWAYS_HIDDEN, True)
+    exclude.update(focus_patterns(dirs))
+    settings.pop("files.exclude", None)
+    settings.pop(FOCUS_KEY, None)
+    if exclude:
+        settings["files.exclude"] = exclude
     if dirs:
-        settings["files.exclude"] = focus_patterns(dirs)
-        settings[FOCUS_KEY] = [d.relative_to(CONTEST_ROOT).as_posix() for d in dirs]
-    else:
-        settings.pop("files.exclude", None)
-        settings.pop(FOCUS_KEY, None)
+        settings[FOCUS_KEY] = [d.relative_to(focus_base()).as_posix() for d in dirs]
     path.write_text(json.dumps(settings, ensure_ascii=False, indent="\t") + "\n", encoding="utf-8")
     return True
 
@@ -1055,23 +1081,24 @@ def current_focus() -> list[Path]:
         settings = json.loads(machine_settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return [d for f in settings.get(FOCUS_KEY, []) if (d := CONTEST_ROOT / f).is_dir()]
+    return [d for f in settings.get(FOCUS_KEY, []) if (d := focus_base() / f).is_dir()]
 
 
 def reveal(src: Path) -> None:
     """受信した問題が cpe focus で隠した場所にあるときは、そのフォルダも表示に加える"""
     try:
         dirs = current_focus()
-        if dirs and src.is_relative_to(CONTEST_ROOT) and not any(src.is_relative_to(d) for d in dirs):
+        if dirs and src.is_relative_to(focus_base()) and not any(src.is_relative_to(d) for d in dirs):
             apply_focus(dirs + [src.parent])
     except Exception:  # 表示の調整に失敗しても、受信は止めない
         pass
 
 
 def resolve_focus_dir(arg: str) -> Path:
-    """cpe focus の引数を、contest の中のフォルダに直す。途中を省いた名前 (ABC → AtCoder/ABC) も受け付ける"""
-    for c in (Path(arg), CONTEST_ROOT / arg):
-        if c.is_dir() and c.resolve().is_relative_to(CONTEST_ROOT):
+    """cpe focus の引数をフォルダに直す。contest の中は、途中を省いた名前 (ABC → AtCoder/ABC) も受け付ける"""
+    base = focus_base()
+    for c in (Path(arg), CONTEST_ROOT / arg, base / arg):
+        if c.is_dir() and c.resolve().is_relative_to(base):
             return c.resolve()
     tops = [d for d in CONTEST_ROOT.iterdir() if d.is_dir() and not d.name.startswith(".")]
     subs = [s for d in tops for s in d.iterdir() if s.is_dir() and not s.name.startswith(".")]
@@ -1083,15 +1110,22 @@ def resolve_focus_dir(arg: str) -> Path:
 
 
 def cmd_focus(args) -> int:
+    if args.all and args.dirs:
+        die("--all は、フォルダの指定と一緒には使えません")
     dirs = [resolve_focus_dir(a) for a in args.dirs]
-    if not apply_focus(dirs):
+    if not apply_focus(dirs, args.all):
         die(f"VS Code の設定ファイルが読めません: {machine_settings_path()} (VS Code で開いたコンテナの中で実行してください)")
+    hidden = "、".join(p.removeprefix("**/") for p in ALWAYS_HIDDEN)
     if dirs:
-        shown = ", ".join(d.relative_to(CONTEST_ROOT).as_posix() or "contest" for d in dirs)
+        base = CONTEST_ROOT if all(d.is_relative_to(CONTEST_ROOT) for d in dirs) else focus_base()
+        shown = ", ".join(d.relative_to(base).as_posix() for d in dirs)
         print(f"表示を絞りました: {shown}")
-        print(dim("全部の表示に戻すには: cpe focus"))
+        print(dim("ふだんの表示に戻すには: cpe focus"))
+    elif args.all:
+        print(f"すべて表示しました ({hidden} も表示しています)")
+        print(dim("ふだんの表示に戻すには: cpe focus"))
     else:
-        print("すべて表示に戻しました")
+        print(f"ふだんの表示に戻しました ({hidden} は隠しています。手入れで見たいときは: cpe focus --all)")
     return 0
 
 
@@ -1379,8 +1413,9 @@ def main() -> int:
     p.add_argument("-w", "--wait", type=float, default=300, help="待つ時間 [秒] (既定 300)")
     p.set_defaults(func=cmd_fetch)
 
-    p = sub.add_parser("focus", help="VS Code のエクスプローラーに、指定したフォルダだけを表示する (引数なしで全表示)")
+    p = sub.add_parser("focus", help="VS Code のエクスプローラーに、指定したフォルダだけを表示する (引数なしで、ふだんの表示)")
     p.add_argument("dirs", nargs="*", metavar="フォルダ", help="表示するフォルダ (例: AtCoder/ABC、drill。複数指定可)")
+    p.add_argument("-a", "--all", action="store_true", help="ふだん隠している .vscode と .devcontainer も含めて、すべて表示する")
     p.set_defaults(func=cmd_focus)
 
     p = sub.add_parser("vscode", help="cp-env/vscode/ の原本を、各作業フォルダの .vscode/ に書き出す")
