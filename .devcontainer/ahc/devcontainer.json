@@ -42,7 +42,7 @@
         "C_Cpp.default.compilerPath": "/usr/local/bin/g++",
         "C_Cpp.default.cppStandard": "gnu++23",
         "C_Cpp.default.includePath": [
-          "${workspaceFolder}/library",
+          "/workspaces/cp-env/library",
           "/opt/ac-library"
         ],
         "C_Cpp.default.defines": [

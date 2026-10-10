@@ -161,7 +161,8 @@ def ensure_pch(flags: list[str], quiet: bool = False) -> Path | None:
     key = hashlib.sha1("\0".join([cxx_version(), *flags]).encode()).hexdigest()[:16]
     pch_dir = CACHE / "pch" / key
     gch = pch_dir / "bits" / "stdc++.h.gch"
-    if gch.exists():
+    shim = gch.with_name("stdc++.h")
+    if gch.exists() and shim.exists():
         return pch_dir
 
     # 本物の bits/stdc++.h の場所を、コンパイラ自身に教えてもらう
@@ -172,9 +173,17 @@ def ensure_pch(flags: list[str], quiet: bool = False) -> Path | None:
     if header is None:
         return None
 
+    # 事前コンパイル済みのヘッダが使われるのは、ソースの最初の #include だけ。2回目以降
+    # (自作ライブラリの中の #include <bits/stdc++.h> など) では、同じフォルダにある普通の
+    # ヘッダが読まれる。無いとエラーになるので、本物を読み込むだけのヘッダを隣に置いておく
+    gch.parent.mkdir(parents=True, exist_ok=True)
+    if not shim.exists():
+        shim.write_text(f'#include "{header}"\n')
+    if gch.exists():
+        return pch_dir
+
     if not quiet:
         print(dim("  <bits/stdc++.h> を事前コンパイル中 (この設定では初回のみ)…"), flush=True)
-    gch.parent.mkdir(parents=True, exist_ok=True)
     tmp = gch.with_name("stdc++.h.gch.tmp")
     r = subprocess.run([CXX, *flags, "-x", "c++-header", header, "-o", str(tmp)],
                        capture_output=True, text=True)
@@ -435,7 +444,10 @@ def summarize_error(err: str, src: Path) -> list[str]:
             code = path.read_text(encoding="utf-8", errors="replace").splitlines()[n - 1].strip()
         except (OSError, IndexError):
             code = ""
-        where = path.name if path.parent == src.parent else str(path)
+        if path.parent == src.parent:
+            where = path.name
+        else:  # ライブラリなど、別のフォルダのファイルは cp-env からの位置で示す
+            where = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path)
         rows.append((f"{where}:{n}", code))
     width = max((len(w) for w, _ in rows), default=0)
     return out + [f"  {w:<{width}}  {clip(code, max_cols=100)}" for w, code in rows]
@@ -811,6 +823,14 @@ def is_heuristic(url: str) -> bool:
     return bool(m) and series_of(m.group(1).lower()) == "AHC"
 
 
+_META = re.compile(r"\s*//\s*@(snippet|desc|cursor)\b\s*(.*)")  # スニペット用の目印の行
+
+
+def strip_meta(text: str) -> str:
+    """スニペット用の目印の行 (// @snippet・// @desc・// @cursor) を取り除く"""
+    return "".join(ln for ln in text.splitlines(keepends=True) if not _META.fullmatch(ln.rstrip("\r\n")))
+
+
 def template_for(cfg: dict, src: Path, interactive: bool = False, name: str | None = None) -> str:
     """新しく作るソースの中身。templates/ に該当があれば使い、無ければ空。
     name を指定したときは、そのテンプレートを必ず使う (無ければエラー)"""
@@ -819,13 +839,13 @@ def template_for(cfg: dict, src: Path, interactive: bool = False, name: str | No
         if not t.is_file():
             have = ", ".join(sorted(p.stem for p in (ROOT / "templates").glob("*.cpp")))
             die(f"テンプレート '{name}' は templates/ にありません (候補: {have})")
-        return t.read_text(encoding="utf-8")
+        return strip_meta(t.read_text(encoding="utf-8"))
     pname, prof = pick_profile(cfg, src)
     names = (["interactive"] if interactive else []) + [prof.get("template", pname), "default"]
     for n in names:
         t = ROOT / "templates" / f"{n}.cpp"
         if t.is_file():
-            return t.read_text(encoding="utf-8")
+            return strip_meta(t.read_text(encoding="utf-8"))
     return ""
 
 
@@ -911,6 +931,7 @@ def cmd_listen(args) -> int:
 
 # ------------------------------------------------------------ VS Code の設定を配る
 GENERATED_MARK = "cpe vscode が生成"
+SNIPPET_FILE = "cpe.code-snippets"  # ライブラリとテンプレートから作るスニペット
 
 
 def vscode_targets() -> list[Path]:
@@ -923,11 +944,69 @@ def vscode_targets() -> list[Path]:
     ]
 
 
+def find_library(name: str, cur: Path) -> Path | None:
+    """#include の名前が自作ライブラリ (cp-env/library/ の中) のファイルなら、そのパスを返す"""
+    lib = ROOT / "library"
+    for c in (cur.parent / name, lib / name):
+        if c.is_file() and c.resolve().is_relative_to(lib):
+            return c.resolve()
+    return None
+
+
+def read_snippet(path: Path) -> tuple[str, dict, list[Path]] | None:
+    """原本1つをスニペットにする。(名前, 定義, 先に必要なライブラリのファイル) を返す。
+    // @snippet の行が無いファイル (base.hpp など) は対象外で、None を返す"""
+    name = desc = None
+    body, deps = [], []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = _META.fullmatch(line)
+        if m and m.group(1) == "snippet":
+            name = m.group(2).strip()
+        elif m and m.group(1) == "desc":
+            desc = m.group(2).strip()
+        elif m:  # @cursor: 貼り付けたあとにカーソルを置く位置
+            body.append(line[:len(line) - len(line.lstrip())] + "$0")
+        elif _PRAGMA_ONCE.match(line):
+            continue
+        elif (inc := _INCLUDE.match(line)) and (dep := find_library(inc.group(1) or inc.group(2), path)):
+            deps.append(dep)  # 自作ライブラリの #include は、貼り付け先では意味がないので取り除く
+        else:
+            body.append(line.replace("\\", "\\\\").replace("$", "\\$"))  # スニペットの記法と衝突する文字
+    if not name:
+        return None
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    return name, {"scope": "cpp", "prefix": name, "body": body, "description": desc or name}, deps
+
+
+def make_snippets() -> str | None:
+    """library/ と templates/ の原本から、VS Code のスニペット定義を作る。原本が無ければ None"""
+    sources = sorted((ROOT / "library").rglob("*.hpp")) + sorted((ROOT / "templates").glob("*.cpp"))
+    parsed = {p.resolve(): s for p in sources if (s := read_snippet(p))}
+    names = {p: s[0] for p, s in parsed.items()}
+    snippets = {}
+    for path, (name, entry, deps) in parsed.items():
+        if name in snippets:
+            die(f"スニペット名 '{name}' が重複しています ({path})")
+        need = [names[d] for d in deps if d in names]
+        if need:  # #include を取り除いた分は、説明に書いて知らせる
+            entry["description"] += f" [先に貼る: {', '.join(need)}]"
+        snippets[name] = entry
+    return json.dumps(snippets, ensure_ascii=False, indent=2) + "\n" if snippets else None
+
+
 def cmd_vscode(args) -> int:
     src_dir = ROOT / "vscode"
     originals = sorted(p for p in src_dir.glob("*") if p.is_file()) if src_dir.is_dir() else []
     if not originals:
         die(f"原本がありません: {src_dir}/")
+    # 書き出すファイル: (名前, 中身, 原本の場所)
+    files = [(p.name, p.read_text(encoding="utf-8"), f"cp-env/vscode/{p.name}") for p in originals]
+    snippets = make_snippets()
+    if snippets:
+        files.append((SNIPPET_FILE, snippets, "cp-env/library/ と cp-env/templates/"))
     ng = 0
     for target in vscode_targets():
         if not target.is_dir():
@@ -935,10 +1014,9 @@ def cmd_vscode(args) -> int:
             continue
         dest_dir = target / ".vscode"
         dest_dir.mkdir(exist_ok=True)
-        for orig in originals:
-            dest = dest_dir / orig.name
-            body = orig.read_text(encoding="utf-8")
-            mark = f"// {GENERATED_MARK}。ここを直接編集しないでください (原本: cp-env/vscode/{orig.name})\n"
+        for name, body, origin in files:
+            dest = dest_dir / name
+            mark = f"// {GENERATED_MARK}。ここを直接編集しないでください (原本: {origin})\n"
             text = mark + body
             if dest.exists():
                 old = dest.read_text(encoding="utf-8", errors="replace")
@@ -953,6 +1031,75 @@ def cmd_vscode(args) -> int:
             dest.write_text(text, encoding="utf-8", newline="\n")
             print(f"  {dest}  書き出しました")
     return 1 if ng else 0
+
+
+# ------------------------------------------------------------ ライブラリのテスト
+def cmd_libtest(args) -> int:
+    """library/ の各ヘッダが単体で読み込めるかを確かめてから、tests/test_*.cpp を実行する"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    cfg = load_config()
+    lib, tdir = ROOT / "library", ROOT / "tests"
+
+    def picked(rel: Path) -> bool:
+        return not args.names or any(n in rel.as_posix() for n in args.names)
+
+    headers = [h for h in sorted(lib.rglob("*.hpp")) if picked(h.relative_to(lib))]
+    tests = [t for t in sorted(tdir.glob("test_*.cpp")) if picked(t.relative_to(tdir))]
+    if not headers and not tests:
+        die("対象がありません (library/**/*.hpp と tests/test_*.cpp を、名前の一部で絞り込みます)")
+    debug = not args.release
+    ng = 0
+
+    # 1. 各ヘッダを1つだけ読み込んで、コンパイルできるかを確かめる
+    #    (先に別のヘッダを読んでいることに頼っていないか、警告が出ないか)
+    _, prof = pick_profile(cfg, tdir / "test.cpp", args.profile)
+    flags = compile_flags(cfg, prof, debug)
+    pch_dir = ensure_pch(flags)
+    base = [CXX, *flags, *(["-I", str(pch_dir)] if pch_dir else []), "-I", str(lib),
+            "-fsyntax-only", "-x", "c++", "-"]
+
+    def check(h: Path):
+        stub = f'#include <bits/stdc++.h>\n#include "{h.relative_to(lib).as_posix()}"\n'
+        return subprocess.run(base, input=stub, capture_output=True, text=True)
+
+    with ThreadPoolExecutor() as pool:
+        results = list(pool.map(check, headers))
+    for h, r in zip(headers, results):
+        if r.returncode != 0 or r.stderr.strip():
+            ng += r.returncode != 0
+            verdict = red("NG") if r.returncode != 0 else yellow("警告")
+            print(f"  {h.relative_to(lib).as_posix()}  {verdict}")
+            print(indent(clip(r.stderr)))
+    if headers:
+        print(f"ヘッダ単体のコンパイル: {len(headers)} 個中 {len(headers) - ng} 個 OK")
+
+    # 2. テストを実行する。assert に失敗するか、サニタイザが問題を見つけると NG
+    width = max((len(t.stem) for t in tests), default=0)
+    ng_tests = 0
+    for t in tests:
+        binary = compile_src(cfg, t, args.profile, debug, args.verbose, args.force)
+        if binary is None:
+            ng_tests += 1
+            continue
+        status, _, err_b, elapsed = run_program([str(binary)], b"", 300.0)
+        if status == "OK":
+            print(f"  {t.stem:<{width}}  {green('OK')}  {elapsed * 1000:6.0f} ms")
+            continue
+        ng_tests += 1
+        print(f"  {t.stem:<{width}}  {red('NG')}  {status}")
+        summary = summarize_error(decode(err_b), t)
+        if summary:
+            print(dim("    --- エラーの要約 ---"))
+            print(indent("\n".join(summary)))
+        print(dim("    --- 標準エラー ---"))
+        print(dim(indent(clip(decode(err_b)))))
+    if tests:
+        print(f"テスト: {len(tests)} 個中 {len(tests) - ng_tests} 個 OK")
+
+    ok = ng == 0 and ng_tests == 0
+    print(green("結果: すべて OK") if ok else red("結果: NG があります"))
+    return 0 if ok else 1
 
 
 def cmd_warmup(args) -> int:
@@ -1038,6 +1185,14 @@ def main() -> int:
     p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定。ACL を展開するかが決まる)")
     p.add_argument("-v", "--verbose", action="store_true", help="確認用のコンパイルコマンドを表示")
     p.set_defaults(func=cmd_bundle)
+
+    p = sub.add_parser("libtest", help="自作ライブラリのテスト (tests/test_*.cpp) を実行する")
+    p.add_argument("names", nargs="*", metavar="名前", help="対象を名前の一部で絞り込む (例: graph)。省略時は全部")
+    p.add_argument("-r", "--release", action="store_true", help="デバッグ用フラグではなく、通常のフラグで実行する")
+    p.add_argument("-p", "--profile", help="設定名 (省略時は default)")
+    p.add_argument("-v", "--verbose", action="store_true", help="コンパイルコマンドを表示")
+    p.add_argument("-f", "--force", action="store_true", help="変更がなくてもコンパイルし直す")
+    p.set_defaults(func=cmd_libtest)
 
     p = sub.add_parser("warmup", help="<bits/stdc++.h> を全設定分、先にコンパイルしておく")
     p.set_defaults(func=cmd_warmup)
