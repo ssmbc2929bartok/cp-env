@@ -5,6 +5,7 @@
   cpe build <ソース> [-p 設定名] [-d] [-v]
   cpe test  <ソース> [-p 設定名] [-d] [-c ケース名] [-e 誤差] [-t 秒] [-v]
   cpe warmup            <bits/stdc++.h> を全設定分、先にコンパイルしておく
+  cpe listen            Competitive Companion からサンプルを受け取って保存する
 
 ソースと読み込んだファイルが前回から変わっていなければ、コンパイルを省略する (-f で強制)。
 <bits/stdc++.h> は設定ごとに一度だけ事前コンパイルし、以後はそれを使う。
@@ -31,6 +32,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent  # cp-env の場所
 CACHE = Path.home() / ".cache" / "cpe"  # 実行ファイルの置き場 (Dropbox の外)
 CXX = "g++"
+CONTEST_ROOT = Path(os.environ.get("CPE_CONTEST_ROOT") or ROOT / "contest")
+PORT = int(os.environ.get("CPE_PORT", "10043"))  # devcontainer.json の containerEnv で設定
+MODE = os.environ.get("CPE_MODE", "algorithm")  # algorithm / heuristic
 
 
 # ------------------------------------------------------------ 表示
@@ -430,6 +434,134 @@ def cmd_test(args) -> int:
     print(green(msg) if ok else red(msg))
     return 0 if ok else 1
 
+# ------------------------------------------------------------ サンプル受信 (Competitive Companion)
+def series_of(contest_id: str) -> str:
+    """AtCoder のコンテストIDからシリーズ名を作る: abc478 → ABC、awc0001 → AWC。
+    「英字3文字 + 数字」以外 (typical90、adt_... など) は Others にまとめる"""
+    m = re.fullmatch(r"([a-z]{3})(\d+)", contest_id)
+    return m.group(1).upper() if m else "Others"
+
+
+def locate(url: str, name: str = "") -> tuple[Path, str] | None:
+    """問題の URL から (ソースを置くフォルダ, 問題名) を決める。
+    対応サイトを増やすときは、ここに if を1つ足す。"""
+    m = re.search(r"atcoder\.jp/contests/([^/]+)/tasks/([^/?#]+)", url)
+    if m:
+        cid, task = m.group(1).lower(), m.group(2).lower()
+        series = series_of(cid)
+        num = re.fullmatch(r"[a-z]{3}(\d+)", cid)
+        folder = num.group(1) if (num and series != "Others") else cid  # abc478 → 478
+        letter = task.rsplit("_", 1)[-1] if "_" in task else task  # abc478_c → c
+        return CONTEST_ROOT / "AtCoder" / series / folder, letter.upper()
+    m = (re.search(r"codeforces\.com/(?:contest|gym)/(\d+)/problem/(\w+)", url)
+         or re.search(r"codeforces\.com/problemset/problem/(\d+)/(\w+)", url))
+    if m:
+        return CONTEST_ROOT / "Codeforces" / m.group(1), m.group(2).upper()
+    m = re.search(r"yukicoder\.me/problems/no/(\d+)", url)
+    if m:
+        return CONTEST_ROOT / "yukicoder", m.group(1)
+    host = re.sub(r"^https?://(www\.)?", "", url).split("/")[0] or "unknown"
+    slug = re.sub(r"[^\w\-]+", "_", name.strip()).strip("_") or "problem"
+    return CONTEST_ROOT / "Others" / host, slug
+
+
+def is_heuristic(url: str) -> bool:
+    """ヒューリスティック用のコンテナが担当する問題か (= AHC)"""
+    m = re.search(r"atcoder\.jp/contests/([^/]+)/", url)
+    return bool(m) and series_of(m.group(1).lower()) == "AHC"
+
+
+def template_for(cfg: dict, src: Path, interactive: bool) -> str:
+    """新しく作るソースの中身。templates/ に該当があれば使い、無ければ空"""
+    pname, prof = pick_profile(cfg, src)
+    names = (["interactive"] if interactive else []) + [prof.get("template", pname), "default"]
+    for n in names:
+        t = ROOT / "templates" / f"{n}.cpp"
+        if t.is_file():
+            return t.read_text(encoding="utf-8")
+    return ""
+
+
+def save_problem(cfg: dict, data: dict) -> tuple[Path, int, bool]:
+    """受け取った問題を保存する。(ソースのパス, サンプル数, ソースを新しく作ったか) を返す"""
+    url = data.get("url", "")
+    folder, pname = locate(url, data.get("name", ""))
+    src = folder / f"{pname}.cpp"
+    tdir = tests_dir(src)
+    tdir.mkdir(parents=True, exist_ok=True)
+
+    interactive = bool(data.get("interactive"))
+    created = False
+    if not src.exists():  # 既に書きかけのソースがあれば、絶対に上書きしない
+        src.write_text(template_for(cfg, src, interactive), encoding="utf-8", newline="\n")
+        created = True
+
+    # サンプルは毎回書き直す (前回の分は消す)。自作ケース (custom-*) などは残す
+    for old in tdir.glob("sample-*"):
+        old.unlink()
+    tests = data.get("tests", [])
+    for i, t in enumerate(tests, 1):
+        (tdir / f"sample-{i}.in").write_text(t.get("input", ""), encoding="utf-8", newline="\n")
+        (tdir / f"sample-{i}.out").write_text(t.get("output", ""), encoding="utf-8", newline="\n")
+
+    info = {
+        "name": data.get("name", ""),
+        "url": url,
+        "timeLimit": data.get("timeLimit", 2000),
+        "memoryLimit": data.get("memoryLimit"),
+        "interactive": interactive,
+    }
+    (tdir / "problem.json").write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n",
+                                       encoding="utf-8", newline="\n")
+    return src, len(tests), created
+
+
+def cmd_listen(args) -> int:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    cfg = load_config()
+    mode = args.mode or MODE
+    port = args.port or PORT
+    if not CONTEST_ROOT.is_dir():
+        die(f"{CONTEST_ROOT} がありません (コンテスト用フォルダのマウントを確認してください)")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            now = time.strftime("%H:%M:%S")
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(n).decode("utf-8"))
+                url, name = data.get("url", ""), data.get("name", "?")
+                mine = is_heuristic(url) == (mode == "heuristic")
+                if not mine:
+                    other = "アルゴリズム用" if mode == "heuristic" else "ヒューリスティック用"
+                    print(dim(f"{now}  {name}: {other}のコンテナの担当なので保存しません"), flush=True)
+                else:
+                    src, cnt, created = save_problem(cfg, data)
+                    rel = src.relative_to(CONTEST_ROOT) if src.is_relative_to(CONTEST_ROOT) else src
+                    note = "新規作成" if created else "ソースは既存のまま"
+                    print(f"{now}  {name}  → {rel}  (サンプル {cnt} 件、{note})", flush=True)
+                self.send_response(200)
+            except Exception as e:  # 1件失敗しても待ち受けは止めない
+                print(red(f"{now}  受信エラー: {e}"), flush=True)
+                self.send_response(400)
+            self.end_headers()
+
+        def log_message(self, *a):  # アクセスログは出さない
+            pass
+
+    try:
+        server = ThreadingHTTPServer((args.host, port), Handler)
+    except OSError as e:
+        die(f"ポート {port} で待ち受けできません ({e})。既に cpe listen が動いていませんか?")
+    print(f"待ち受け中: ポート {port} / 担当 {mode} / 保存先 {CONTEST_ROOT}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print()
+    return 0
+
+
 def cmd_warmup(args) -> int:
     """全設定 (通常・デバッグ) の <bits/stdc++.h> を事前コンパイルする。コンテスト前の準備用"""
     cfg = load_config()
@@ -475,6 +607,12 @@ def main() -> int:
 
     p = sub.add_parser("warmup", help="<bits/stdc++.h> を全設定分、先にコンパイルしておく")
     p.set_defaults(func=cmd_warmup)
+
+    p = sub.add_parser("listen", help="Competitive Companion からサンプルを受け取って保存する")
+    p.add_argument("--port", type=int, help="待ち受けるポート (既定は環境変数 CPE_PORT)")
+    p.add_argument("--mode", choices=["algorithm", "heuristic"], help="担当 (既定は環境変数 CPE_MODE)")
+    p.add_argument("--host", default="0.0.0.0", help="待ち受けるアドレス (コンテナ内では 0.0.0.0)")
+    p.set_defaults(func=cmd_listen)
 
     args = ap.parse_args()
     return args.func(args)
