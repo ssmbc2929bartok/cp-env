@@ -1,5 +1,5 @@
-// @snippet AtCoder
-// @desc 競技プログラミング用のC++テンプレート
+// @snippet yukicoder
+// @desc yukicoder用テンプレート
 #include <bits/stdc++.h>
 #include <atcoder/all>
 using namespace std;

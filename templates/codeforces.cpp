@@ -1,7 +1,6 @@
-// @snippet AtCoder
-// @desc 競技プログラミング用のC++テンプレート
+// @snippet Codeforces
+// @desc Codeforces用テンプレート (複数テストケース)
 #include <bits/stdc++.h>
-#include <atcoder/all>
 using namespace std;
 using ll = long long;
 #define rep(i, a, b) for (ll i = a; i < b; ++i)
@@ -17,7 +16,16 @@ struct Init {
 } init;
 // ------------------------------------------------
 
-int main() {
+// テストケースを1つ解く
+void solve() {
   // @cursor
+}
+
+int main() {
+  int t;
+  cin >> t;
+  while (t--) {
+    solve();
+  }
   return 0;
 }

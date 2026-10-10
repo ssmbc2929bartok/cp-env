@@ -1,5 +1,6 @@
-// @snippet AtCoder
-// @desc 競技プログラミング用のC++テンプレート
+// @snippet AHC
+// @desc AHC用テンプレート (事前に用意したコードの URL つき)
+// 事前に用意したコード: https://github.com/ssmbc2929bartok/cp-env
 #include <bits/stdc++.h>
 #include <atcoder/all>
 using namespace std;
