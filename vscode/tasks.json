@@ -35,6 +35,39 @@
       "group": "build",
       "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
       "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+    },
+    {
+      "label": "cpe: bundle",
+      "detail": "提出用に #include を展開して submit/ に書き出す",
+      "type": "process",
+      "command": "cpe",
+      "args": ["bundle", "${file}"],
+      "options": { "cwd": "${fileDirname}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
+      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+    },
+    {
+      "label": "cpe: run",
+      "detail": "実行して、ターミナルから入力を手で渡す (インタラクティブ問題など)",
+      "type": "process",
+      "command": "cpe",
+      "args": ["run", "${file}"],
+      "options": { "cwd": "${fileDirname}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": true },
+      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+    },
+    {
+      "label": "cpe: add",
+      "detail": "自作の入力を足す (ターミナルに貼り付けて Ctrl+D)",
+      "type": "process",
+      "command": "cpe",
+      "args": ["add", "${file}"],
+      "options": { "cwd": "${fileDirname}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": true },
+      "problemMatcher": []
     }
   ]
 }

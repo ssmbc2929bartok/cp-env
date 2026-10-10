@@ -2,11 +2,19 @@
 """cpe: 競プロ環境コマンド
 
 使い方:
-  cpe build <ソース> [-p 設定名] [-d] [-v]
-  cpe test  <ソース> [-p 設定名] [-d] [-c ケース名] [-e 誤差] [-t 秒] [-v]
+  cpe build  [ソース] [-p 設定名] [-d] [-v]
+  cpe test   [ソース] [-p 設定名] [-d] [-c ケース名] [-e 誤差] [-t 秒] [-v]
+  cpe run    [ソース] [-p 設定名] [-d] [-i 入力]   コンパイルして実行する (標準入力をそのまま渡す)
+  cpe add    [ソース] [-o]                        自作の入力 tests/<ソース名>/custom-N.in を足す
+  cpe new    <ファイル>... [-t テンプレート名]     テンプレートからソースを作る
+  cpe stress <解> <愚直解> <生成器> [-n 回数] [-d]  2つの出力が食い違う入力を、乱数で探す
+  cpe bundle [ソース] [-p 設定名]                  #include を展開して submit/<ソース名>.cpp を作る
   cpe warmup            <bits/stdc++.h> を全設定分、先にコンパイルしておく
   cpe listen            Competitive Companion からサンプルを受け取って保存する
   cpe vscode            cp-env/vscode/ の原本を、各作業フォルダの .vscode/ に書き出す
+
+[ソース] を省略すると、今いるフォルダで最後に保存した .cpp を使う。拡張子 .cpp も省略できる。
+build・test・run は、頭文字だけ (cpe b / cpe t / cpe r) でも呼べる。
 
 ソースと読み込んだファイルが前回から変わっていなければ、コンパイルを省略する (-f で強制)。
 <bits/stdc++.h> は設定ごとに一度だけ事前コンパイルし、以後はそれを使う。
@@ -18,6 +26,7 @@
 サブコマンドを足すときは、cmd_xxx 関数を書いて main() に登録する。
 """
 import argparse
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -261,10 +270,24 @@ def compile_src(cfg: dict, src: Path, name: str | None = None, debug: bool = Fal
 
 
 # ------------------------------------------------------------ サブコマンド
+def resolve_src(arg: str | None) -> Path:
+    """ソースの指定を解釈する。省略時は、今いるフォルダで最後に保存した .cpp を使う"""
+    if arg:
+        p = Path(arg)
+        if not p.is_file() and not p.suffix and p.with_name(p.name + ".cpp").is_file():
+            p = p.with_name(p.name + ".cpp")  # 拡張子は省略できる: cpe test C
+        if not p.is_file():
+            die(f"{p} がありません")
+        return p.resolve()
+    cands = sorted(Path.cwd().glob("*.cpp"), key=lambda q: q.stat().st_mtime_ns)
+    if not cands:
+        die("ソースを指定してください (今いるフォルダに .cpp がありません)")
+    print(dim(f"ソースの指定なし → {cands[-1].name} (最後に保存したファイル)"), file=sys.stderr)
+    return cands[-1].resolve()
+
+
 def cmd_build(args) -> int:
-    src = Path(args.src)
-    if not src.is_file():
-        die(f"{src} がありません")
+    src = resolve_src(args.src)
     cfg = load_config()
     out = compile_src(cfg, src, args.profile, args.debug, args.verbose, args.force)
     if out is None:
@@ -307,24 +330,26 @@ def read_problem_info(tdir: Path) -> dict:
 
 
 # ------------------------------------------------------------ 実行と判定
-def run_binary(binary: Path, stdin_data: bytes, tl: float):
+def exit_status(returncode: int) -> str:
+    """終了コードを OK / RE(理由) の形にする"""
+    if returncode == 0:
+        return "OK"
+    if returncode < 0:  # シグナルで落ちた (SIGSEGV など)
+        try:
+            return f"RE({signal.Signals(-returncode).name})"
+        except ValueError:
+            return f"RE(signal {-returncode})"
+    return f"RE(exit {returncode})"
+
+
+def run_program(cmd: list[str], stdin_data: bytes, tl: float):
     """実行して (状態, 標準出力, 標準エラー, 秒) を返す。状態は OK / TLE / RE(理由)"""
     t0 = time.perf_counter()
     try:
-        r = subprocess.run([str(binary)], input=stdin_data, capture_output=True, timeout=tl)
+        r = subprocess.run(cmd, input=stdin_data, capture_output=True, timeout=tl)
     except subprocess.TimeoutExpired as e:
         return "TLE", e.stdout or b"", e.stderr or b"", time.perf_counter() - t0
-    elapsed = time.perf_counter() - t0
-    if r.returncode != 0:
-        if r.returncode < 0:  # シグナルで落ちた (SIGSEGV など)
-            try:
-                why = signal.Signals(-r.returncode).name
-            except ValueError:
-                why = f"signal {-r.returncode}"
-        else:
-            why = f"exit {r.returncode}"
-        return f"RE({why})", r.stdout, r.stderr, elapsed
-    return "OK", r.stdout, r.stderr, elapsed
+    return exit_status(r.returncode), r.stdout, r.stderr, time.perf_counter() - t0
 
 
 _FLOAT = re.compile(r"[+-]?(\d+\.\d*|\.\d+|\d+)([eE][+-]?\d+)?")
@@ -359,10 +384,65 @@ def decode(b: bytes) -> str:
     return b.decode("utf-8", errors="replace")
 
 
+# ------------------------------------------------------------ 実行時エラーの要約
+def error_messages(err: str) -> list[str]:
+    """標準エラーから、原因を述べている行を取り出す (_GLIBCXX_DEBUG・サニタイザ・例外・assert)"""
+    lines = [ln.strip() for ln in err.splitlines()]
+    msgs = []
+    for i, s in enumerate(lines):
+        if s.startswith("Error:"):  # _GLIBCXX_DEBUG。折り返して空行まで続く
+            j = i + 1
+            while j < len(lines) and lines[j]:
+                j += 1
+            msgs.append(" ".join(lines[i:j]))
+        elif "runtime error:" in s:  # UBSan
+            msgs.append(s[s.index("runtime error:"):])
+        elif "ERROR:" in s and "Sanitizer:" in s:  # ASan。後ろに並ぶレジスタの値は省く
+            msg = re.sub(r"\s*(\(pc|at pc) .*$", "", s.split("ERROR:", 1)[1].strip())
+            if i + 1 < len(lines) and re.match(r"(READ|WRITE) of size \d+", lines[i + 1]):
+                msg += f" ({lines[i + 1].split(' at ')[0]})"
+            msgs.append(msg)
+        elif s.startswith(("terminate called", "what():")):  # 捕まえなかった例外
+            msgs.append(s)
+        elif "Assertion" in s and s.endswith("failed."):  # assert (ACL の範囲チェックなど)
+            msgs.append(re.sub(r"^\S*a\.out: ", "", s))
+    return list(dict.fromkeys(msgs))  # 同じ行が繰り返されたら1つにまとめる
+
+
+def own_locations(err: str, src: Path, limit: int = 5) -> list[tuple[Path, int]]:
+    """標準エラーに出てくる「ファイル:行」のうち、自分のファイル (cp-env の中か、ソースと同じフォルダ) のもの。
+
+    最初に見つかったまとまり (空行まで) だけを見る。ASan は2つ目以降のまとまりに、
+    メモリを確保した場所など、落ちた場所とは別の行を出すため。
+    """
+    roots = sorted({str(ROOT), str(src.parent)}, key=len, reverse=True)
+    pat = re.compile("((?:" + "|".join(map(re.escape, roots)) + r")/[^:\n]*):(\d+)")
+    locs = []
+    for ln in err.splitlines():
+        hits = [(Path(p), int(n)) for p, n in pat.findall(ln)]
+        if not hits and locs and not ln.strip():
+            break
+        locs += [h for h in hits if h not in locs]  # 再帰で同じ行が並んでも1つにまとめる
+    return locs[:limit]
+
+
+def summarize_error(err: str, src: Path) -> list[str]:
+    """RE の原因を数行にまとめる: 原因のメッセージと、バックトレースのうち自分のファイルの行"""
+    out = [yellow(clip(m, max_cols=300)) for m in error_messages(err)]
+    rows = []
+    for path, n in own_locations(err, src):
+        try:
+            code = path.read_text(encoding="utf-8", errors="replace").splitlines()[n - 1].strip()
+        except (OSError, IndexError):
+            code = ""
+        where = path.name if path.parent == src.parent else str(path)
+        rows.append((f"{where}:{n}", code))
+    width = max((len(w) for w, _ in rows), default=0)
+    return out + [f"  {w:<{width}}  {clip(code, max_cols=100)}" for w, code in rows]
+
+
 def cmd_test(args) -> int:
-    src = Path(args.src)
-    if not src.is_file():
-        die(f"{src} がありません")
+    src = resolve_src(args.src)
     cfg = load_config()
     tdir = tests_dir(src)
     info = read_problem_info(tdir)
@@ -386,11 +466,11 @@ def cmd_test(args) -> int:
     run_tl = tl * 10 if args.debug else tl  # サニタイザ付きは遅いので緩める
 
     width = max(len(c.stem) for c in cases)
-    n_ac = n_judged = 0
+    n_ac = n_judged = n_unknown = 0  # n_unknown: 原因が表示できなかった RE の数
     for case in cases:
         data = case.read_bytes()
         exp_path = case.with_suffix(".out")
-        status, out_b, err_b, elapsed = run_binary(binary, data, run_tl)
+        status, out_b, err_b, elapsed = run_program([str(binary)], data, run_tl)
         out, err = decode(out_b), decode(err_b)
 
         show_detail = False
@@ -412,6 +492,13 @@ def cmd_test(args) -> int:
         ms = f"{elapsed * 1000:6.0f} ms" if status != "TLE" else f">{run_tl * 1000:5.0f} ms"
         print(f"  {case.stem:<{width}}  {verdict}  {ms}")
 
+        if status.startswith("RE"):
+            summary = summarize_error(err, src)
+            if summary:  # 長い標準エラーを読まなくても原因が分かるよう、先頭に出す
+                print(dim("    --- エラーの要約 ---"))
+                print(indent("\n".join(summary)))
+            else:
+                n_unknown += 1
         if show_detail or args.verbose:
             print(dim("    --- 入力 ---"))
             print(indent(clip(decode(data))))
@@ -425,6 +512,8 @@ def cmd_test(args) -> int:
             print(dim("    --- 標準エラー ---"))
             print(dim(indent(clip(err))))
 
+    if n_unknown and not args.debug:
+        print(dim("RE の原因は、デバッグ用フラグ (cpe test -d) で実行すると表示されます"))
     if n_judged == 0:
         print(dim("判定対象なし (期待出力 .out のあるケースがありません)"))
         return 0
@@ -434,6 +523,256 @@ def cmd_test(args) -> int:
         msg += f"  (時間制限 {tl:g}s" + (" ×10 (デバッグ)" if args.debug else "") + ")"
     print(green(msg) if ok else red(msg))
     return 0 if ok else 1
+
+
+# ------------------------------------------------------------ 手で実行する
+def find_input(src: Path, name: str) -> Path:
+    """-i の指定を解釈する: ファイルのパスか、tests/<ソース名>/ のケース名 (sample-1 など)"""
+    if Path(name).is_file():
+        return Path(name)
+    hit = list_cases(tests_dir(src), [name])
+    if len(hit) != 1:
+        found = f"候補: {', '.join(c.stem for c in hit)}" if hit else "ファイルもケースも見つかりません"
+        die(f"入力 '{name}' を1つに決められません ({found})")
+    return hit[0]
+
+
+def cmd_run(args) -> int:
+    src = resolve_src(args.src)
+    cfg = load_config()
+    stdin = open(find_input(src, args.input), "rb") if args.input else None
+    timed = stdin is not None or not sys.stdin.isatty()  # 手で入力するときの秒数は意味がないので出さない
+
+    # cpe の表示はすべて標準エラーに出す (cpe run > out.txt で、プログラムの出力だけを保存できるように)
+    with contextlib.redirect_stdout(sys.stderr):
+        binary = compile_src(cfg, src, args.profile, args.debug, args.verbose, args.force)
+    if binary is None:
+        return 1
+
+    t0 = time.perf_counter()
+    proc = subprocess.Popen([str(binary)], stdin=stdin, stderr=subprocess.PIPE)
+    # 標準エラーはそのまま画面に流しつつ、RE の要約用に末尾を控えておく
+    kept = b""
+    while chunk := proc.stderr.read1(65536):
+        sys.stderr.buffer.write(chunk)
+        sys.stderr.buffer.flush()
+        kept = (kept + chunk)[-(1 << 20):]
+    rc = proc.wait()
+    elapsed = time.perf_counter() - t0
+
+    with contextlib.redirect_stdout(sys.stderr):
+        if rc != 0:
+            print(yellow(exit_status(rc)))
+            summary = summarize_error(decode(kept), src)
+            if summary:
+                print(dim("--- エラーの要約 ---"))
+                print("\n".join(summary))
+            elif not args.debug:
+                print(dim("原因は、デバッグ用フラグ (cpe run -d) で実行すると表示されます"))
+        if timed:
+            print(dim(f"{elapsed * 1000:.0f} ms"))
+    return rc if rc >= 0 else 128 - rc  # シグナルで落ちたときは、シェルと同じ 128 + 番号
+
+
+def next_number(tdir: Path, prefix: str) -> int:
+    """custom-1, custom-2, … の次に使う番号"""
+    nums = [int(m.group(1)) for p in tdir.glob(f"{prefix}-*")
+            if (m := re.fullmatch(rf"{prefix}-(\d+)", p.stem))]
+    return max(nums, default=0) + 1
+
+
+def read_pasted(what: str) -> str:
+    """端末に貼り付けた文章を、Ctrl+D まで読む。パイプで渡されたときは最後まで読む"""
+    if sys.stdin.isatty():
+        print(f"{what}を貼り付けて、最後に行頭で Ctrl+D を押してください", flush=True)
+    text = sys.stdin.read().replace("\r\n", "\n")
+    return text + "\n" if text and not text.endswith("\n") else text
+
+
+def cmd_add(args) -> int:
+    src = resolve_src(args.src)
+    if args.out and not sys.stdin.isatty():
+        die("-o は、端末で貼り付けるときだけ使えます (パイプでは入力と出力を区切れないため)")
+    tdir = tests_dir(src)
+    tdir.mkdir(parents=True, exist_ok=True)
+    case = tdir / f"custom-{next_number(tdir, 'custom')}.in"
+
+    text = read_pasted("入力")
+    case.write_text(text, encoding="utf-8", newline="\n")
+    print(f"{case}  を作りました" + ("" if text else " (空です。エディタで開いて書いてください)"))
+    if args.out:
+        exp = case.with_suffix(".out")
+        exp.write_text(read_pasted("期待する出力"), encoding="utf-8", newline="\n")
+        print(f"{exp}  を作りました")
+    else:
+        print(dim("期待する出力 (.out) が無いので、cpe test では判定せず出力だけ表示します"))
+    return 0
+
+
+def cmd_new(args) -> int:
+    cfg = load_config()
+    for name in args.files:
+        src = Path(name)
+        if not src.suffix:
+            src = src.with_name(src.name + ".cpp")
+        if src.exists():  # 書きかけのソースを消さないよう、上書きはしない
+            print(yellow(f"{src}  は既にあるので、そのままにしました"))
+            continue
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text(template_for(cfg, src, name=args.template), encoding="utf-8", newline="\n")
+        print(f"{src}  を作りました")
+    return 0
+
+
+# ------------------------------------------------------------ 愚直解との突き合わせ
+def cmd_stress(args) -> int:
+    sol, naive, gen = (resolve_src(a) for a in (args.sol, args.naive, args.gen))
+    cfg = load_config()
+    tdir = tests_dir(sol)
+
+    bins = []
+    for path, debug in ((sol, args.debug), (naive, False), (gen, False)):
+        b = compile_src(cfg, path, args.profile, debug, args.verbose, args.force)
+        if b is None:
+            return 1
+        bins.append(str(b))
+    sol_bin, naive_bin, gen_bin = bins
+
+    # 時間制限: 解は test と同じ。愚直解は遅くて当然なので、長めに待つ
+    tl = args.tl if args.tl else read_problem_info(tdir).get("timeLimit", 2000) / 1000
+    sol_tl = tl * 10 if args.debug else tl
+    naive_tl = max(10.0, tl * 10)
+    live = sys.stdout.isatty()  # 端末なら、進み具合を同じ行に上書きして表示する
+    cr = "\r\033[K" if live else ""  # 行頭に戻って、その行を消す
+
+    def report(seed: int, title: str, data: bytes, expected: bytes | None, sections: list) -> int:
+        """見つかった入力を tests/<ソース名>/stress-N に保存して、内容を表示する"""
+        tdir.mkdir(parents=True, exist_ok=True)
+        case = tdir / f"stress-{next_number(tdir, 'stress')}.in"
+        case.write_bytes(data)
+        if expected is not None:
+            case.with_suffix(".out").write_bytes(expected)
+        print(f"{cr}  #{seed}  {title}")
+        for label, body in [("入力", decode(data))] + sections:
+            print(dim(f"    --- {label} ---"))
+            print(indent(clip(body)) if body.strip() else dim("    (出力なし)"))
+        print(f"保存しました: {case}" + ("" if expected is None else " と .out (愚直解の出力)"))
+        if expected is not None:
+            print(dim(f"もう一度試すには: cpe test {sol.name} -c {case.stem}" + (" -d" if args.debug else "")))
+        return 1
+
+    done = 0
+    try:
+        while args.count <= 0 or done < args.count:
+            seed = args.start + done  # 生成器には通し番号を引数で渡す (乱数の種に使う)
+            status, data, err, _ = run_program([gen_bin, str(seed)], b"", 10.0)
+            if status != "OK":
+                print(f"{cr}  #{seed}  " + red(f"生成器が失敗しました: {status}"))
+                print(dim(indent(clip(decode(err)))))
+                return 2
+
+            status, expected, err, _ = run_program([naive_bin], data, naive_tl)
+            if status != "OK":
+                sections = [("エラーの要約", "\n".join(summarize_error(decode(err), naive))),
+                            ("標準エラー", decode(err))]
+                return report(seed, yellow(f"愚直解が {status}"), data, None,
+                              [s for s in sections if s[1].strip()])
+
+            status, actual, err, _ = run_program([sol_bin], data, sol_tl)
+            if status != "OK":
+                sections = [("エラーの要約", "\n".join(summarize_error(decode(err), sol))),
+                            ("愚直解の出力", decode(expected)), ("出力", decode(actual)),
+                            ("標準エラー", decode(err))]
+                return report(seed, yellow(status), data, expected,
+                              [s for s in sections if s[1].strip() or s[0] == "出力"])
+            if not same_output(decode(expected), decode(actual), args.eps):
+                return report(seed, red("WA"), data, expected,
+                              [("愚直解の出力", decode(expected)), ("出力", decode(actual))])
+
+            done += 1
+            if live:
+                print(f"{cr}  #{seed}  一致 ({done} 件)", end="", flush=True)
+            elif done % 100 == 0:
+                print(f"  #{seed}  一致 ({done} 件)", flush=True)
+    except KeyboardInterrupt:
+        print(f"{cr}中断しました。{done} 件すべて一致")
+        return 130
+    print(cr + green(f"{done} 件すべて一致"))
+    return 0
+
+
+# ------------------------------------------------------------ 提出用に1ファイルへ展開する
+_INCLUDE = re.compile(r'\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)')
+_PRAGMA_ONCE = re.compile(r"\s*#\s*pragma\s+once\b")
+
+
+def acl_dirs() -> list[Path]:
+    """ACL (atcoder/ フォルダ) の置き場所。Dockerfile が CPLUS_INCLUDE_PATH に入れている"""
+    dirs = [Path(p) for p in os.environ.get("CPLUS_INCLUDE_PATH", "").split(os.pathsep) if p]
+    return [d for d in dirs + [Path("/opt/ac-library")] if (d / "atcoder").is_dir()]
+
+
+def expand_includes(src: Path, expand_acl: bool) -> tuple[str, int]:
+    """自作ライブラリ (と ACL) の #include を中身に置き換える。(全文, 展開したファイル数) を返す。
+
+    同じファイルは最初の1回だけ展開する (#pragma once と同じ扱い)。
+    見つからないものと <bits/stdc++.h> などは、そのまま残す。
+    """
+    lib = ROOT / "library"
+    acl = acl_dirs() if expand_acl else []
+    seen = {src}
+    out = []
+
+    def find(name: str, quoted: bool, cur: Path) -> Path | None:
+        cands = ([cur.parent / name] if quoted else []) + [lib / name]
+        if name.startswith("atcoder/"):
+            cands += [d / name for d in acl]
+        return next((c.resolve() for c in cands if c.is_file()), None)
+
+    def walk(path: Path) -> None:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if _PRAGMA_ONCE.match(line):
+                continue  # 1ファイルにまとめると不要 (残すと警告が出る)
+            m = _INCLUDE.match(line)
+            target = find(m.group(1) or m.group(2), bool(m.group(1)), path) if m else None
+            if target is None:
+                out.append(line)
+            elif target not in seen:
+                seen.add(target)
+                walk(target)
+
+    walk(src)
+    return "\n".join(out) + "\n", len(seen) - 1
+
+
+def cmd_bundle(args) -> int:
+    src = resolve_src(args.src)
+    cfg = load_config()
+    pname, prof = pick_profile(cfg, src, args.profile)
+    expand_acl = bool(prof.get("bundle_acl"))
+
+    text, n_files = expand_includes(src, expand_acl)
+    out = src.parent / "submit" / src.name  # ソースの隣に置くと、どちらが元か紛らわしいので分ける
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(text, encoding="utf-8", newline="\n")
+    note = f"{n_files} ファイルを展開" + (" (ACL を含む)" if expand_acl else "")
+    print(f"[{pname}] {src.name} → {out}  ({note}、{text.count(chr(10))} 行)", flush=True)
+
+    # 提出先と同じ条件でコンパイルできるかを確かめる:
+    # LOCAL の定義なし、自作ライブラリなし、ACL を展開した場合は ACL もなし
+    cmd = [CXX, f"-std={prof.get('std', 'gnu++23')}", *prof.get("flags", []),
+           "-fsyntax-only", "-w", str(out)]
+    env = dict(os.environ)
+    if expand_acl:
+        env.pop("CPLUS_INCLUDE_PATH", None)
+    if args.verbose:
+        print(" ".join(cmd))
+    if subprocess.run(cmd, env=env).returncode != 0:
+        print(red("提出用のファイルがコンパイルできません (上のエラーを確認してください)"), file=sys.stderr)
+        return 1
+    print(green("コンパイル確認 OK"))
+    return 0
+
 
 # ------------------------------------------------------------ サンプル受信 (Competitive Companion)
 def series_of(contest_id: str) -> str:
@@ -472,8 +811,15 @@ def is_heuristic(url: str) -> bool:
     return bool(m) and series_of(m.group(1).lower()) == "AHC"
 
 
-def template_for(cfg: dict, src: Path, interactive: bool) -> str:
-    """新しく作るソースの中身。templates/ に該当があれば使い、無ければ空"""
+def template_for(cfg: dict, src: Path, interactive: bool = False, name: str | None = None) -> str:
+    """新しく作るソースの中身。templates/ に該当があれば使い、無ければ空。
+    name を指定したときは、そのテンプレートを必ず使う (無ければエラー)"""
+    if name:
+        t = ROOT / "templates" / f"{name}.cpp"
+        if not t.is_file():
+            have = ", ".join(sorted(p.stem for p in (ROOT / "templates").glob("*.cpp")))
+            die(f"テンプレート '{name}' は templates/ にありません (候補: {have})")
+        return t.read_text(encoding="utf-8")
     pname, prof = pick_profile(cfg, src)
     names = (["interactive"] if interactive else []) + [prof.get("template", pname), "default"]
     for n in names:
@@ -633,16 +979,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="cpe", description="競プロ環境コマンド")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("build", help="コンパイルだけする")
-    p.add_argument("src", help="ソースファイル")
+    src_help = "ソースファイル (省略時は、今いるフォルダで最後に保存した .cpp)"
+
+    p = sub.add_parser("build", aliases=["b"], help="コンパイルだけする")
+    p.add_argument("src", nargs="?", help=src_help)
     p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定)")
     p.add_argument("-d", "--debug", action="store_true", help="デバッグ用フラグでコンパイル")
     p.add_argument("-v", "--verbose", action="store_true", help="コンパイルコマンドを表示")
     p.add_argument("-f", "--force", action="store_true", help="変更がなくてもコンパイルし直す")
     p.set_defaults(func=cmd_build)
 
-    p = sub.add_parser("test", help="tests/<ソース名>/ のケースを全部流して判定する")
-    p.add_argument("src", help="ソースファイル")
+    p = sub.add_parser("test", aliases=["t"], help="tests/<ソース名>/ のケースを全部流して判定する")
+    p.add_argument("src", nargs="?", help=src_help)
     p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定)")
     p.add_argument("-d", "--debug", action="store_true", help="デバッグ用フラグでコンパイル")
     p.add_argument("-c", "--case", action="append", help="実行するケース名 (ワイルドカード・部分一致可、複数指定可)")
@@ -651,6 +999,45 @@ def main() -> int:
     p.add_argument("-v", "--verbose", action="store_true", help="AC のケースも入出力を表示")
     p.add_argument("-f", "--force", action="store_true", help="変更がなくてもコンパイルし直す")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("run", aliases=["r"], help="コンパイルして実行する (標準入力をそのまま渡す)")
+    p.add_argument("src", nargs="?", help=src_help)
+    p.add_argument("-i", "--input", help="入力ファイル、または tests/<ソース名>/ のケース名 (sample-1 など)")
+    p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定)")
+    p.add_argument("-d", "--debug", action="store_true", help="デバッグ用フラグでコンパイル")
+    p.add_argument("-v", "--verbose", action="store_true", help="コンパイルコマンドを表示")
+    p.add_argument("-f", "--force", action="store_true", help="変更がなくてもコンパイルし直す")
+    p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("add", help="自作の入力 tests/<ソース名>/custom-N.in を足す (貼り付けて Ctrl+D)")
+    p.add_argument("src", nargs="?", help=src_help)
+    p.add_argument("-o", "--out", action="store_true", help="期待する出力 (custom-N.out) も続けて貼り付ける")
+    p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("new", help="テンプレートからソースを作る (既にあるファイルは上書きしない)")
+    p.add_argument("files", nargs="+", metavar="ファイル", help="作るソース (.cpp は省略可、複数指定可)")
+    p.add_argument("-t", "--template", help="テンプレート名 (省略時はパスから判定。templates/<名前>.cpp)")
+    p.set_defaults(func=cmd_new)
+
+    p = sub.add_parser("stress", help="解と愚直解の出力が食い違う入力を、乱数で探す")
+    p.add_argument("sol", help="調べたい解")
+    p.add_argument("naive", help="愚直解 (遅くても正しい解)")
+    p.add_argument("gen", help="入力の生成器 (引数に通し番号を受け取り、入力を標準出力に書く)")
+    p.add_argument("-n", "--count", type=int, default=0, help="試す回数 (既定は、食い違うか Ctrl+C で止めるまで)")
+    p.add_argument("-s", "--start", type=int, default=1, help="生成器に渡す通し番号の最初の値 (既定 1)")
+    p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定)")
+    p.add_argument("-d", "--debug", action="store_true", help="解をデバッグ用フラグでコンパイル")
+    p.add_argument("-e", "--eps", type=float, default=1e-6, help="小数の許容誤差 (既定 1e-6、0 で厳密比較)")
+    p.add_argument("-t", "--tl", type=float, help="解の時間制限 [秒] (既定は problem.json、無ければ 2)")
+    p.add_argument("-v", "--verbose", action="store_true", help="コンパイルコマンドを表示")
+    p.add_argument("-f", "--force", action="store_true", help="変更がなくてもコンパイルし直す")
+    p.set_defaults(func=cmd_stress)
+
+    p = sub.add_parser("bundle", help="#include を展開して、提出用の submit/<ソース名>.cpp を作る")
+    p.add_argument("src", nargs="?", help=src_help)
+    p.add_argument("-p", "--profile", help="設定名 (省略時はパスから判定。ACL を展開するかが決まる)")
+    p.add_argument("-v", "--verbose", action="store_true", help="確認用のコンパイルコマンドを表示")
+    p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser("warmup", help="<bits/stdc++.h> を全設定分、先にコンパイルしておく")
     p.set_defaults(func=cmd_warmup)
