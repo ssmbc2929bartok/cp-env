@@ -20,8 +20,11 @@ ARG ACL_VERSION=v1.6
 RUN git clone --depth 1 --branch ${ACL_VERSION} \
   https://github.com/atcoder/ac-library /opt/ac-library
 
-# testlib
-RUN git clone --depth 1 https://github.com/MikeMirzayanov/testlib /opt/testlib \
+# testlib (0.9.45)。タグは 0.9.41 で止まっているので、コミットで固定する
+ARG TESTLIB_COMMIT=1e4e8a24c79c6bad3becbdb5a332ffc352b7d5dd
+RUN git init -q /opt/testlib \
+  && git -C /opt/testlib fetch -q --depth 1 https://github.com/MikeMirzayanov/testlib ${TESTLIB_COMMIT} \
+  && git -C /opt/testlib -c advice.detachedHead=false checkout -q FETCH_HEAD \
   && cp /opt/testlib/testlib.h /usr/local/include/
 
 # yuki-tool
