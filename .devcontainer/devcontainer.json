@@ -33,7 +33,9 @@
   "init": true,
   // マウントしたリポジトリで git が「所有者が違う」と拒否するのを防ぐ
   "postCreateCommand": "git config --global --add safe.directory '*'",
-  "postStartCommand": "setsid -f sh -c 'cpe listen > /tmp/cpe-listen.log 2>&1'",
+  // サンプル受信を裏で動かし続ける。VS Code はこのコマンドを端末つきで実行し、終わると端末を閉じる。
+  // そのときの SIGHUP で受信が消えることがある (起動直後で CPU が忙しいと起きやすい) ので、nohup で無視させる
+  "postStartCommand": "nohup setsid -f sh -c 'cpe listen > /tmp/cpe-listen.log 2>&1' > /dev/null 2>&1",
   "customizations": {
     "vscode": {
       "extensions": [

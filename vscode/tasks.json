@@ -1,6 +1,8 @@
 {
   // VS Code のタスク (原本)。cpe vscode で各作業フォルダの .vscode/ に書き出す。
   // Ctrl+Shift+B で「cpe: test」が動く。それ以外は「タスクの実行」から選ぶ。
+  // コンパイルエラーを「問題」に出すパターンは、C/C++ 拡張の $gcc と同じものを直接書いている。
+  // $gcc を使うと、コンテナを作った直後 (拡張のインストールが終わる前) にエラーになるため。
   "version": "2.0.0",
   "tasks": [
     {
@@ -12,7 +14,13 @@
       "options": { "cwd": "${fileDirname}" },
       "group": { "kind": "build", "isDefault": true },
       "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
-      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+      "problemMatcher": {
+        "owner": "cpe", "source": "g++", "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error):\\s+(.*)$",
+          "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+        }
+      }
     },
     {
       "label": "cpe: test (debug)",
@@ -23,7 +31,13 @@
       "options": { "cwd": "${fileDirname}" },
       "group": "build",
       "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
-      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+      "problemMatcher": {
+        "owner": "cpe", "source": "g++", "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error):\\s+(.*)$",
+          "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+        }
+      }
     },
     {
       "label": "cpe: build",
@@ -34,7 +48,13 @@
       "options": { "cwd": "${fileDirname}" },
       "group": "build",
       "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
-      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+      "problemMatcher": {
+        "owner": "cpe", "source": "g++", "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error):\\s+(.*)$",
+          "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+        }
+      }
     },
     {
       "label": "cpe: bundle",
@@ -45,7 +65,13 @@
       "options": { "cwd": "${fileDirname}" },
       "group": "build",
       "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": false },
-      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+      "problemMatcher": {
+        "owner": "cpe", "source": "g++", "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error):\\s+(.*)$",
+          "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+        }
+      }
     },
     {
       "label": "cpe: run",
@@ -56,7 +82,13 @@
       "options": { "cwd": "${fileDirname}" },
       "group": "build",
       "presentation": { "reveal": "always", "panel": "shared", "clear": true, "focus": true },
-      "problemMatcher": { "base": "$gcc", "fileLocation": "absolute" }
+      "problemMatcher": {
+        "owner": "cpe", "source": "g++", "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*?):(\\d+):(\\d*):?\\s+(?:fatal\\s+)?(warning|error):\\s+(.*)$",
+          "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+        }
+      }
     },
     {
       "label": "cpe: fetch",
