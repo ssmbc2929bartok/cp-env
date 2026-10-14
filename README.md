@@ -53,7 +53,7 @@ Docker と VS Code Dev Containers で作る、C++ の競技プログラミング
    export CP_PROBLEMS_DIR="$HOME/path/to/problems"
    ```
 
-   登録したあとは、VS Code を完全に終了して開き直します。
+   登録したあとは、VS Code を完全に終了して開き直します。コンテナを開くときに `CP_CONTEST_DIR-is-not-set` などを含むエラーが出たら、VS Code から環境変数が見えていません。VS Code のウィンドウをすべて閉じてから開き直してください。
 
 3. VS Code で `cp-env` フォルダを開き、コマンドパレットから「Dev Containers: コンテナーで再度開く」を実行して、使うコンテナを選びます。初回はイメージのビルドに時間がかかります(yuki-tool をソースからビルドするため)。
 
@@ -193,12 +193,13 @@ UnionFind・セグメント木・modint などは、AtCoder Library を使いま
 | `acl.cpp` | `ACL` | `using namespace atcoder;` と `mint` つき |
 | `interactive.cpp` | `interactive` | インタラクティブ問題(出力は `endl`) |
 | `codeforces.cpp` | `Codeforces` | 複数テストケース(`solve()` を T 回呼ぶ) |
-| `ahc.cpp` | `AHC` | AHC(事前に用意したコードの URL つき) |
+| `ahc.cpp` | `AHC` | AHC |
 | `yukicoder.cpp` | `yukicoder` | yukicoder |
 | `icpc.cpp` | `ICPC` | データセットを終わりまで繰り返す |
 | `validator.cpp` | `validator` | 作問用の validator(testlib) |
 | `generator.cpp` | `generator` | 作問用の generator(testlib)。`cpe stress` の生成器にも使える |
 
+- `validator.cpp`・`generator.cpp` 以外のテンプレートには、末尾にこのリポジトリの URL を入れています(下の「生成AIの扱い」)。
 - 問題を受信したときと `cpe new` では、設定名と同じ名前のテンプレートが自動で選ばれます(`AtCoder/` の下なら `atcoder.cpp`、`Codeforces/` の下なら `codeforces.cpp`)。インタラクティブ問題の受信時は `interactive.cpp` です。
 - それ以外は、`cpe new A.cpp -t acl` のように名前で指定するか、スニペットで呼び出します。
 
@@ -241,8 +242,22 @@ UnionFind・セグメント木・modint などは、AtCoder Library を使いま
 | `cp-env for AHC`(ヒューリスティック用) | GitHub Copilot の補完と Next Edit Suggestions だけ有効(C++ のみ)。エージェントは無効。見分けやすいよう、ステータスバーがオレンジ色になります |
 
 - ヒューリスティック用の設定は、短期AHCのルール(指定された補完機能だけ可)に合わせています。
-- ルールは更新されます。コンテストの前に、[AtCoder生成AI対策ルール](https://info.atcoder.jp/entry/llm-rules-ja)・[短期AHCのルール](https://info.atcoder.jp/entry/short-ahc-llm-rules-ja)・[長期AHCのルール](https://info.atcoder.jp/entry/ahc-llm-rules-ja) の最新版を確認してください。
-- このリポジトリには、生成AI(Claude)を使って書いたコードが含まれます(`tools/cpe`、`library/`、`tests/`、`templates/` の一部)。短期AHCで `library/` や `templates/` のコードを使うときは、提出コードにこのリポジトリの URL を書きます(`templates/ahc.cpp` には最初から入っています)。
+- ルールは更新されます。コンテストの前に、[AtCoder生成AI対策ルール](https://info.atcoder.jp/entry/llm-rules-ja)・[短期AHCのルール](https://info.atcoder.jp/entry/short-ahc-llm-rules-ja)・[長期AHCのルール](https://info.atcoder.jp/entry/ahc-llm-rules-ja) の最新版を確認してください。Codeforces など、ほかのサイトのルールも各サイトで確認してください。
+- このリポジトリには、生成AI(Claude)を使って書いたコードが含まれます(`tools/cpe`、`library/`、`tests/`、`templates/` の一部)。
+
+**事前に用意したコードの URL**
+
+AtCoder では、コンテストの前に生成AIで作ったコードを使うとき、次の2つが条件です。ABC・ARC・AGC は2026-10-14版のルールから、短期AHCはそれ以前からの条件です。
+
+- コンテストの開始前に、Web 上に公開しておく
+- 提出するコードに、参照 URL を付ける
+
+このリポジトリは公開しているので、1つ目は push 済みであれば満たせます。2つ目のために、次のようにしています。
+
+- コンテスト用のテンプレート(`validator.cpp`・`generator.cpp` 以外)の末尾に、`// Pre-written library: <このリポジトリの URL>` の行を入れています。AtCoder 以外のサイトでも、公開済みのコードだと示せます。
+- `cpe bundle` は、自作ライブラリを展開した場所ごとに、そのファイルの URL をコメントで入れます。展開したライブラリに、まだ push していない変更があるときは警告します(origin の内容と、最後に fetch・push した時点で比べます)。
+- テンプレートを使わずにライブラリを貼ったときや、テンプレートの URL の行を消したときは、自分で URL を書き足してください。
+- ライブラリやテンプレートを変えたときは、コンテストの開始前に push してください。開始後に push したものは、事前に公開したことになりません。
 
 ## 入っているもの
 

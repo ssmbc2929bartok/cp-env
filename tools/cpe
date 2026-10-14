@@ -730,11 +730,42 @@ def acl_dirs() -> list[Path]:
     return [d for d in dirs + [Path("/opt/ac-library")] if (d / "atcoder").is_dir()]
 
 
-def expand_includes(src: Path, expand_acl: bool) -> tuple[str, int]:
-    """自作ライブラリ (と ACL) の #include を中身に置き換える。(全文, 展開したファイル数) を返す。
+def git_out(*args: str) -> str:
+    """cp-env のリポジトリで git を実行し、標準出力を返す (失敗したら空)"""
+    r = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def published_base() -> tuple[str, str] | None:
+    """公開先 (origin) の (GitHub 上の URL, ブランチ名)。origin が GitHub でなければ None"""
+    m = re.fullmatch(r"(?:https://|git@)github\.com[/:]([^/]+/[^/]+?)(?:\.git)?/?",
+                     git_out("remote", "get-url", "origin"))
+    if not m:
+        return None
+    branch = git_out("symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/")
+    return f"https://github.com/{m.group(1)}", branch or "main"
+
+
+def unpublished(files: list[Path], branch: str) -> list[Path]:
+    """origin/<branch> (最後に fetch・push した時点) と中身が違う、つまりまだ公開されていないファイル"""
+    if not files:
+        return []
+    rel = [f.relative_to(ROOT).as_posix() for f in files]
+    remote = {}  # パス → origin 側の blob の hash
+    for line in git_out("ls-tree", f"origin/{branch}", "--", *rel).splitlines():
+        meta, path = line.split("\t", 1)
+        remote[path] = meta.split()[2]
+    local = git_out("hash-object", "--", *rel).splitlines()  # 改行の変換は .gitattributes どおり
+    return [f for f, r, h in zip(files, rel, local) if remote.get(r) != h]
+
+
+def expand_includes(src: Path, expand_acl: bool, url: tuple[str, str] | None = None) -> tuple[str, list[Path]]:
+    """自作ライブラリ (と ACL) の #include を中身に置き換える。(全文, 展開したファイル) を返す。
 
     同じファイルは最初の1回だけ展開する (#pragma once と同じ扱い)。
     見つからないものと <bits/stdc++.h> などは、そのまま残す。
+    url (公開先の URL とブランチ名) を渡すと、自作ライブラリを展開した場所に、そのファイルの URL を
+    コメントで入れる (生成AIで事前に作ったコードには参照 URL を付ける、という AtCoder のルールのため)。
     """
     lib = ROOT / "library"
     acl = acl_dirs() if expand_acl else []
@@ -748,19 +779,25 @@ def expand_includes(src: Path, expand_acl: bool) -> tuple[str, int]:
         return next((c.resolve() for c in cands if c.is_file()), None)
 
     def walk(path: Path) -> None:
+        mine = path != src and path.is_relative_to(lib)
+        # URL は、先に展開する依存ファイルの後ろ、このファイル自身の最初の行の直前に入れる
+        head = f"// {url[0]}/blob/{url[1]}/{path.relative_to(ROOT).as_posix()}" if mine and url else None
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if _PRAGMA_ONCE.match(line):
-                continue  # 1ファイルにまとめると不要 (残すと警告が出る)
+            if _PRAGMA_ONCE.match(line) or (mine and _META.fullmatch(line)):
+                continue  # 1ファイルにまとめると不要 (#pragma once は残すと警告が出る)
             m = _INCLUDE.match(line)
             target = find(m.group(1) or m.group(2), bool(m.group(1)), path) if m else None
             if target is None:
+                if head and line.strip():
+                    out.append(head)
+                    head = None
                 out.append(line)
             elif target not in seen:
                 seen.add(target)
                 walk(target)
 
     walk(src)
-    return "\n".join(out) + "\n", len(seen) - 1
+    return "\n".join(out) + "\n", sorted(seen - {src})
 
 
 def cmd_bundle(args) -> int:
@@ -769,12 +806,24 @@ def cmd_bundle(args) -> int:
     pname, prof = pick_profile(cfg, src, args.profile)
     expand_acl = bool(prof.get("bundle_acl"))
 
-    text, n_files = expand_includes(src, expand_acl)
+    base = published_base()
+    text, files = expand_includes(src, expand_acl, base)
     out = src.parent / "submit" / src.name  # ソースの隣に置くと、どちらが元か紛らわしいので分ける
     out.parent.mkdir(exist_ok=True)
     out.write_text(text, encoding="utf-8", newline="\n")
-    note = f"{n_files} ファイルを展開" + (" (ACL を含む)" if expand_acl else "")
+    note = f"{len(files)} ファイルを展開" + (" (ACL を含む)" if expand_acl else "")
     print(f"[{pname}] {src.name} → {out}  ({note}、{text.count(chr(10))} 行)", flush=True)
+
+    # 自作ライブラリは、コンテスト前に公開 (push) してあることが、生成AIのルール上の条件
+    mine = [f for f in files if f.is_relative_to(ROOT / "library")]
+    if mine and base is None:
+        print(yellow("公開先 (git の origin) が GitHub だと確かめられないので、ライブラリの URL を付けていません"),
+              file=sys.stderr)
+    elif mine and (stale := unpublished(mine, base[1])):
+        print(yellow(f"まだ push していない変更があります (origin/{base[1]} と違う): ")
+              + ", ".join(f.relative_to(ROOT).as_posix() for f in stale), file=sys.stderr)
+        print(yellow("  AtCoder では、生成AIで作ったコードはコンテスト開始前の公開が条件です"
+                     " (開始後に push しても、事前に公開したことになりません)"), file=sys.stderr)
 
     # 提出先と同じ条件でコンパイルできるかを確かめる:
     # LOCAL の定義なし、自作ライブラリなし、ACL を展開した場合は ACL もなし

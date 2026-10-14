@@ -29,3 +29,5 @@ int main() {
   }
   return 0;
 }
+
+// Pre-written library: https://github.com/ssmbc2929bartok/cp-env

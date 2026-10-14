@@ -1,6 +1,5 @@
 // @snippet AHC
-// @desc AHC用テンプレート (事前に用意したコードの URL つき)
-// 事前に用意したコード: https://github.com/ssmbc2929bartok/cp-env
+// @desc AHC用テンプレート
 #include <bits/stdc++.h>
 #include <atcoder/all>
 using namespace std;
@@ -22,3 +21,5 @@ int main() {
   // @cursor
   return 0;
 }
+
+// Pre-written library: https://github.com/ssmbc2929bartok/cp-env

@@ -9,9 +9,10 @@
   "remoteEnv": {
     "PATH": "${containerEnv:PATH}:/workspaces/cp-env/tools"
   },
+  // 環境変数が未設定のときは、エラーメッセージに変数名が出るよう、":" の後ろの文字列を代わりに入れる
   "mounts": [
-    "source=${localEnv:CP_CONTEST_DIR},target=/workspaces/cp-env/contest,type=bind",
-    "source=${localEnv:CP_PROBLEMS_DIR},target=/workspaces/cp-env/sakumon,type=bind",
+    "source=${localEnv:CP_CONTEST_DIR:CP_CONTEST_DIR-is-not-set},target=/workspaces/cp-env/contest,type=bind",
+    "source=${localEnv:CP_PROBLEMS_DIR:CP_PROBLEMS_DIR-is-not-set},target=/workspaces/cp-env/sakumon,type=bind",
     "source=cp-env-cache,target=/root/.cache,type=volume"
   ],
   // Competitive Companion がサンプルを送ってくるポート
