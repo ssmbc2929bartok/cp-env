@@ -271,6 +271,13 @@ AtCoder では、コンテストの前に生成AIで作ったコードを使う�
 
 ACL・testlib・yuki-tool は、イメージのビルド時に取得します。このリポジトリには含めていません。
 
+コンテナの中の VS Code には、次の拡張機能が自動で入ります(`devcontainer.json` の `extensions`)。ホストの VS Code に入れている拡張機能のうち、コンテナの中で動く種類のものは、コンテナには入りません。使いたいものは、拡張機能ビューの「Dev Container にインストール」で入れるか、`extensions` に足してください。
+
+| 拡張機能 | 用途 |
+|---|---|
+| C/C++(`ms-vscode.cpptools`) | 補完、エラーの表示、整形 |
+| Markdown All in One(`yzhang.markdown-all-in-one`) | Markdown の数式の色分けと、`\frac` などの候補(作問の問題文やメモ用) |
+
 ## 動作確認した環境
 
 - Windows 11 + Docker Desktop(WSL 2)+ VS Code の Dev Containers 拡張

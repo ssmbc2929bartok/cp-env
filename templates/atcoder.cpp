@@ -1,6 +1,7 @@
 // @snippet AtCoder
 // @desc 競技プログラミング用のC++テンプレート
 #include <bits/stdc++.h>
+
 #include <atcoder/all>
 using namespace std;
 using ll = long long;
@@ -22,4 +23,4 @@ int main() {
   return 0;
 }
 
-// Pre-written library: https://github.com/ssmbc2929bartok/cp-env
+// Pre-written library: https://github.com/ssmbc2929bartok/cp-env/tree/main/library

@@ -39,7 +39,9 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-vscode.cpptools"
+        "ms-vscode.cpptools",
+        // Markdown の数式 ($...$) の色分けと、\frac などの候補 (作問の問題文やメモ用。生成AIの機能ではない)
+        "yzhang.markdown-all-in-one"
       ],
       "settings": {
         "C_Cpp.default.compilerPath": "/usr/local/bin/g++",
