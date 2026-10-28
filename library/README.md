@@ -126,6 +126,24 @@ vector<int> right = two_pointers(
 - `matrix` の mod は、貼ったコードの中の `MOD` を書き換えます。
 - 素因数分解を何度も行うときは `sieve`、大きな数を1回だけなら `factorize` が向いています。
 
+### 幾何(`geometry/`)
+
+| 名前 | 内容 | 使い方 |
+|---|---|---|
+| `angle_sort` | 偏角ソート(外積で比べる) | `angle_sort(ps);`(`ps` は `vector<pair<ll, ll>>`) `angle_less(a, b)`(a の偏角が b より小さいか) |
+
+- 偏角は、x 軸の正の向きを 0 とし、反時計回りに [0, 2π) で数えます。原点 (0, 0) は先頭に来ます。偏角が同じ点どうしの順番は決まっていません。
+- 座標は整数で、絶対値は 10^9 以下にします(外積が `long long` に収まる範囲)。この範囲なら誤差は出ません。
+- 原点以外の点 c を中心にするときは、各点から c を引いてから並べます。
+- 点に番号などが付いているときは、添字を並べます。
+
+```cpp
+// 添字を、p[i] の偏角の小さい順に並べる
+vector<int> idx(n);
+iota(idx.begin(), idx.end(), 0);
+sort(idx.begin(), idx.end(), [&](int i, int j) { return angle_less(p[i], p[j]); });
+```
+
 ### AHC(`ahc/`)
 
 | 名前 | 内容 | 使い方 |
