@@ -5,6 +5,10 @@ using namespace std;
 using ll = long long;
 #define rep(i, a, b) for (ll i = a; i < b; ++i)
 #define rrep(i, a, b) for (ll i = a; i >= b; --i)
+#ifndef LOCAL
+#define cerr \
+  if (false) cerr
+#endif
 
 // --- 初期設定（小数15桁出力） ---
 // インタラクティブ問題では、出力をすぐ相手に届ける必要がある。

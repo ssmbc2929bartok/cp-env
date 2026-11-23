@@ -1,12 +1,19 @@
 // @snippet AtCoder
 // @desc 競技プログラミング用のC++テンプレート
 #include <bits/stdc++.h>
-
 #include <atcoder/all>
 using namespace std;
 using ll = long long;
 #define rep(i, a, b) for (ll i = a; i < b; ++i)
 #define rrep(i, a, b) for (ll i = a; i >= b; --i)
+#ifndef LOCAL
+#define cerr \
+  if (false) cerr
+#endif
+#define vec(type) vector<type>
+#define vec2(type) vector<vector<type>>
+#define vec3(type) vector < vector<vector<type>>
+
 
 // --- 初期設定（入出力の高速化と小数15桁出力） ---
 struct Init {
